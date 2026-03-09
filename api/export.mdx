@@ -368,6 +368,75 @@ curl -X POST http://localhost:8000/api/export/forensic-summary \
 
 ---
 
+## POST /api/export/split-zip
+
+Export filtered data as multiple ZIP archives split by size limit (for AI analysis with token constraints).
+
+### Request Body
+
+<ParamField body="filename" type="string" required>
+  Source CSV filename from ingestion
+</ParamField>
+
+<ParamField body="format" type="string" required>
+  Export format: `"csv"`
+</ParamField>
+
+<ParamField body="max_size_mb" type="number" required>
+  Maximum size per ZIP file in MB (e.g., 50, 99)
+</ParamField>
+
+<ParamField body="query" type="string">
+  Global search filter
+</ParamField>
+
+<ParamField body="col_filters" type="object">
+  Column-specific filters
+</ParamField>
+
+<ParamField body="selected_ids" type="array">
+  Row IDs to include (from row selection)
+</ParamField>
+
+<ParamField body="start_time" type="string">
+  ISO 8601 start timestamp
+</ParamField>
+
+<ParamField body="end_time" type="string">
+  ISO 8601 end timestamp
+</ParamField>
+
+### Response
+
+```json
+{
+  "download_url": "/download/Export_Security_Split_1704067200.zip",
+  "filename": "Export_Security_Split_1704067200.zip",
+  "parts": 3,
+  "total_rows": 42000
+}
+```
+
+### Use Case
+
+Split large datasets into multiple archives that fit within AI token limits:
+
+```bash
+curl -X POST http://localhost:8000/api/export/split-zip \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filename": "Security_evtx_1704067200.csv",
+    "format": "csv",
+    "max_size_mb": 50,
+    "start_time": "2024-01-01T00:00:00Z",
+    "end_time": "2024-01-02T00:00:00Z"
+  }'
+```
+
+The resulting ZIP contains multiple CSV files (`part_001.csv`, `part_002.csv`, etc.) that can be analyzed sequentially by AI systems.
+
+---
+
 ## GET /download/{filename}
 
 Download exported file with automatic cleanup (10s delay after serving).

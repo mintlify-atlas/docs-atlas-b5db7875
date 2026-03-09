@@ -1,0 +1,310 @@
+---
+title: "Additional Endpoints"
+description: "Utility endpoints for reset, YARA scanning, IOC extraction, and enrichment"
+---
+
+This page documents additional utility endpoints for system management, malware scanning, IOC extraction, and threat intelligence enrichment.
+
+---
+
+## POST /api/reset
+
+Hard reset the application state by clearing all cached data and uploaded files.
+
+### Response
+
+```json
+{
+  "message": "Hard reset successful. Data cleared."
+}
+```
+
+### Example
+
+```bash
+curl -X POST http://localhost:8000/api/reset
+```
+
+### Behavior
+
+- Clears `processed_files` in-memory cache
+- Deletes all files in `chronos_uploads/` directory
+- Deletes all files in `chronos_output/` directory
+- Resets application to fresh state
+
+<Warning>
+This is a destructive operation. All ingested data and analysis results will be lost.
+</Warning>
+
+---
+
+## POST /api/yara_scan/{filename}
+
+Scan ingested CSV text content against compiled YARA rules for malware detection.
+
+### Path Parameters
+
+<ParamField path="filename" type="string" required>
+  CSV filename from ingestion (e.g., `import_Security_1704067200.csv`)
+</ParamField>
+
+### Response
+
+```json
+{
+  "matches": [
+    {
+      "rule": "QILIN_Agenda_Ransomware",
+      "namespace": "default",
+      "tags": ["ransomware", "QILIN"],
+      "meta": {
+        "description": "QILIN/Agenda ransomware targeting ESXi",
+        "reference": "https://..."
+      },
+      "strings": [
+        {
+          "identifier": "$str1",
+          "instances": [
+            {
+              "matched_data": "ChaCha20",
+              "offset": 1234
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "total_matches": 1,
+  "scanned_rows": 42000
+}
+```
+
+### Example
+
+```bash
+curl -X POST http://localhost:8000/api/yara_scan/import_Security_1704067200.csv
+```
+
+### Supported YARA Rules
+
+The scanner uses 7 YARA rule files from `rules/yara/`:
+
+- **Ransomware**: LockBit, QILIN/Agenda, generic ransomware patterns
+- **C2 Frameworks**: Cobalt Strike, Sliver, Metasploit
+- **Infostealers**: Credential theft patterns
+- **LOLBins**: Living-off-the-land binary abuse
+- **Webshells**: PHP, ASP.NET webshell detection
+- **macOS Persistence**: LaunchAgents, LaunchDaemons abuse
+
+<Info>
+YARA scanning is CPU-intensive for large datasets. Consider filtering data before scanning.
+</Info>
+
+---
+
+## POST /api/document/extract_iocs
+
+Extract Indicators of Compromise (IOCs) from ingested forensic data.
+
+### Request Body
+
+<ParamField body="filename" type="string" required>
+  CSV filename from ingestion
+</ParamField>
+
+### Response
+
+```json
+{
+  "iocs": {
+    "ip_addresses": ["192.168.1.100", "10.0.0.5"],
+    "domains": ["malicious.com", "c2server.net"],
+    "file_hashes": {
+      "md5": ["d41d8cd98f00b204e9800998ecf8427e"],
+      "sha256": ["e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"]
+    },
+    "file_paths": [
+      "C:\\Windows\\Temp\\malware.exe",
+      "/tmp/persistence.sh"
+    ],
+    "registry_keys": [
+      "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+    ],
+    "urls": ["http://malicious.com/payload.exe"]
+  },
+  "total_iocs": 12
+}
+```
+
+### Example
+
+```bash
+curl -X POST http://localhost:8000/api/document/extract_iocs \
+  -H "Content-Type: application/json" \
+  -d '{"filename": "import_Security_1704067200.csv"}'
+```
+
+### IOC Extraction Logic
+
+The endpoint uses regex patterns to extract:
+
+- **IPv4 addresses**: Standard dotted-quad notation
+- **Domains**: FQDN patterns (excluding internal/private)
+- **MD5/SHA1/SHA256 hashes**: Hex string patterns
+- **File paths**: Windows and Unix path structures
+- **Registry keys**: Windows registry hive paths
+- **URLs**: HTTP/HTTPS URLs with full validation
+
+---
+
+## POST /api/document/check_xlsx
+
+Validate XLSX file structure and check for potential corruption or malicious content.
+
+### Request Body
+
+<ParamField body="filename" type="string" required>
+  XLSX filename to validate
+</ParamField>
+
+### Response
+
+```json
+{
+  "valid": true,
+  "sheets": ["Sheet1", "Indicators", "Timeline"],
+  "total_rows": 1500,
+  "warnings": [],
+  "errors": []
+}
+```
+
+### Example
+
+```bash
+curl -X POST http://localhost:8000/api/document/check_xlsx \
+  -H "Content-Type: application/json" \
+  -d '{"filename": "report.xlsx"}'
+```
+
+### Validation Checks
+
+- ZIP structure integrity (XLSX is ZIP-based)
+- XML schema validation for workbook/worksheet files
+- Relationship integrity between sheets
+- Detection of macro-enabled files (.xlsm)
+- External link detection (potential data exfiltration)
+
+<Warning>
+If `warnings` includes "Contains macros" or "External links detected", manually review the file before processing.
+</Warning>
+
+---
+
+## GET /api/enrichment/config
+
+Retrieve threat intelligence enrichment configuration.
+
+### Response
+
+```json
+{
+  "enabled": true,
+  "providers": [
+    {
+      "name": "VirusTotal",
+      "enabled": true,
+      "api_key_configured": true,
+      "rate_limit": "4 requests/minute"
+    },
+    {
+      "name": "AbuseIPDB",
+      "enabled": false,
+      "api_key_configured": false
+    }
+  ]
+}
+```
+
+### Example
+
+```bash
+curl http://localhost:8000/api/enrichment/config
+```
+
+---
+
+## POST /api/enrichment/lookup
+
+Enrich IOCs with threat intelligence from configured providers.
+
+### Request Body
+
+<ParamField body="ioc_type" type="string" required>
+  IOC type: `"ip"`, `"domain"`, `"hash"`, `"url"`
+</ParamField>
+
+<ParamField body="ioc_value" type="string" required>
+  IOC value to lookup (e.g., `"192.168.1.100"`)
+</ParamField>
+
+### Response
+
+```json
+{
+  "ioc": "192.168.1.100",
+  "type": "ip",
+  "enrichment": {
+    "reputation_score": 85,
+    "classification": "malicious",
+    "threat_type": "C2",
+    "first_seen": "2023-12-01T00:00:00Z",
+    "last_seen": "2024-01-15T12:30:00Z",
+    "associated_malware": ["Cobalt Strike"],
+    "geolocation": {
+      "country": "RU",
+      "city": "Moscow"
+    },
+    "source": "VirusTotal"
+  },
+  "cached": false
+}
+```
+
+### Example
+
+```bash
+curl -X POST http://localhost:8000/api/enrichment/lookup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ioc_type": "ip",
+    "ioc_value": "192.168.1.100"
+  }'
+```
+
+### Caching
+
+Enrichment results are cached in `engine/enrichment_cache.py` to reduce API calls and respect rate limits. Cache TTL is 24 hours by default.
+
+<Note>
+Enrichment requires valid API keys configured in `.env` file. See [Installation Guide](/installation) for setup instructions.
+</Note>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="API Overview" icon="book" href="/api/overview">
+    API architecture and authentication
+  </Card>
+  <Card title="Analysis Endpoints" icon="chart-line" href="/api/analysis">
+    Timeline queries and forensic reports
+  </Card>
+  <Card title="Export Endpoints" icon="file-export" href="/api/export">
+    Multi-format export capabilities
+  </Card>
+  <Card title="Detection Rules" icon="shield-halved" href="/guides/detection-rules">
+    Configure YARA and Sigma rules
+  </Card>
+</CardGroup>

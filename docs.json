@@ -81,7 +81,8 @@
               "api/overview",
               "api/upload",
               "api/analysis",
-              "api/export"
+              "api/export",
+              "api/additional-endpoints"
             ]
           },
           {
