@@ -1,0 +1,776 @@
+---
+title: 'Multi-Agent Development Workflow'
+description: 'Coordinated development protocol using Claude, Gemini CLI, and Antigravity with skill registry and CI/CD automation'
+icon: 'users'
+---
+
+## Overview
+
+Chronos-DFIR employs a **multi-agent development protocol** where three AI agents collaborate with distinct roles:
+
+- **Claude (Architect)**: Design decisions, code implementation, rule authoring
+- **Gemini CLI (Engineer)**: QA audits, performance profiling, dependency review
+- **Antigravity (Auditor)**: Counter-audits, reality checks, empirical verification
+
+This workflow ensures **code quality**, **architectural integrity**, and **reality-grounded progress tracking**.
+
+<Info>
+  This is a production workflow used to develop Chronos-DFIR from v162 to v185 (23 major versions, 361 commits).
+</Info>
+
+---
+
+## Agent Roles & Responsibilities
+
+### Claude (Architect)
+
+**Primary Tool**: Claude Code CLI / Claude Sonnet 4.0
+
+**Responsibilities**:
+- Design architectural decisions (module structure, API contracts)
+- Implement new features (Python backend, JavaScript frontend)
+- Write detection rules (Sigma YAML, YARA)
+- Refactor and decompose monolithic code (`app.py` 2,160 → 1,528 lines)
+- Update documentation (`CLAUDE.md`, `README.md`, `.agents/STATUS.md`)
+
+**Example Session Log**:
+```markdown
+## v179 Session (2026-03-08)
+**Goal**: Fix MFT timestamp fabrication (Critical Finding #1)
+
+**Actions**:
+1. Read `mft_engine.py` → Identified `datetime.now()` fraud
+2. Rewrote `_read_si_timestamps()` with real FILETIME struct parsing
+3. Verified `win64_to_datetime()` utility (was present but unused)
+4. Created unit test: FILETIME 0x01D6A3E8E8F3C000 → 2020-01-15 10:30:00
+5. Updated `CLAUDE.md` with resolution notes
+
+**Commits**: 3 files changed (mft_engine.py, tests/test_mft.py, CLAUDE.md)
+```
+
+Reference: `CLAUDE.md:165-168` (v179 MFT fix)
+
+---
+
+### Gemini CLI (Engineer)
+
+**Primary Tool**: Gemini CLI / Gemini 2.5
+
+**Responsibilities**:
+- QA audits after major releases
+- Performance profiling (memory usage, query plans)
+- Dependency review (`requirements.txt` security scan)
+- Test coverage analysis
+- Strategic recommendations ("consider extracting X to Y")
+
+**Example Audit Report**:
+```markdown
+## Gemini CLI Audit v168 (2026-03-08)
+**Status**: COMPLETE
+
+**Findings**:
+- ✅ Sigma engine loaded 32 rules successfully
+- ✅ YARA rules cover ransomware, LOLBins, C2 frameworks
+- ⚠️ `app.py` still 2,108 lines (target: <2000)
+- ⚠️ No `timeframe` support in Sigma engine
+- ⚠️ MFT timestamps still using `datetime.now()`
+
+**Recommendations**:
+1. Extract `process_file()` to `engine/ingestor.py`
+2. Implement Sigma temporal conditions
+3. Fix MFT FILETIME parsing
+```
+
+**Issue**: Gemini reports tend to be **aspirational** (describes roadmap as shipped code).
+
+Reference: `CLAUDE.md:119-124` (Gemini v168 evaluation)
+
+---
+
+### Antigravity (Auditor)
+
+**Primary Tool**: Antigravity Agent / Custom Audit Framework
+
+**Responsibilities**:
+- **Counter-audits**: Verify Gemini's claims against actual source code
+- **Empirical checks**: Grep for `datetime.now()`, count pandas imports, measure `app.py` lines
+- **Reality grounding**: Flag false "COMPLETE" statuses
+- **Critical findings**: Prioritize forensic integrity violations
+
+**Example Counter-Audit**:
+```markdown
+## Antigravity V5 Counter-Audit (2026-03-08)
+**Subject**: Gemini v168 "Production-Ready" claim
+
+**Verification Results**:
+| Claim | Reality | Status |
+|-------|---------|--------|
+| "Pandas eliminated" | `grep -r 'import pandas'` → 5 occurrences | ❌ FALSE |
+| "app.py < 2000 lines" | `wc -l app.py` → 2,118 lines | ❌ FALSE |
+| "MFT timestamps fixed" | `grep 'datetime.now()' mft_engine.py` → 1 match | ❌ FALSE |
+| "CSS GPU hints" | `grep 'will-change\|content-visibility' *.css` → 0 matches | ❌ FALSE |
+| "Sigma temporal" | `grep 'timeframe' sigma_engine.py` → commented out | ❌ FALSE |
+
+**Verdict**: STAGING-FRAGILE (not production-ready)
+```
+
+Reference: `CLAUDE.md:126-133` (Antigravity V3 assessment)
+
+---
+
+## Conflict Resolution Protocol
+
+<Warning>
+  **Golden Rule**: If Gemini reports "COMPLETE" but Antigravity flags issues → **Antigravity takes precedence**.
+</Warning>
+
+**Procedure**:
+1. **Gemini audit** → Strategic recommendations
+2. **Antigravity counter-audit** → Empirical verification
+3. **Claude review** → Prioritize findings, implement fixes
+4. **Scorecard update** → `.agents/SCORECARD.md` tracks scores by area
+
+**Example**:
+```markdown
+## v180 Resolution
+**Gemini**: "Pandas vectorization complete"
+**Antigravity**: Found 5 pandas imports in `app.py:145,178,210,245,290`
+**Claude**: Confirmed Antigravity correct. Eliminated all 5 in v180.
+
+**Scorecard Update**:
+- Data Engine: 65/100 → 95/100
+- Code Quality: 70/100 → 90/100
+```
+
+Reference: `CLAUDE.md:58-60` (Conflict resolution)
+
+---
+
+## Skill Registry System
+
+Chronos-DFIR maintains a **central skill registry** tracking 76 skills across 5 categories.
+
+### Skill Categories
+
+<Accordion title="active (10 skills)">
+  **Status**: Production code in `engine/` or `app.py`
+
+  **Examples**:
+  - `chronos_sigma_engine` → `engine/sigma_engine.py`
+  - `chronos_chain_of_custody` → SHA256 hash in upload endpoint
+  - `chronos_forensic_analyzer` → `engine/forensic.py`
+  - `chronos_ingestor` → `engine/ingestor.py`
+  - `chronos_histogram_builder` → `engine/analyzer.py`
+
+  **Verification**:
+  ```bash
+  python engine/skill_router.py | grep "active:"
+  # Output: active: 10
+  ```
+
+  Reference: `engine/skill_router.py:1-300`
+</Accordion>
+
+<Accordion title="frontend (5 skills)">
+  **Status**: Implemented in `static/js/`
+
+  **Examples**:
+  - `chronos_grid_virtualization` → `static/js/grid.js` (Tabulator remote pagination)
+  - `chronos_filter_composition` → `static/js/filters.js` (query + col_filters + time)
+  - `chronos_persistent_selection` → `static/js/grid.js` (`_persistentSelectedIds` Set)
+  - `chronos_chart_sync` → `static/js/charts.js` (listens to `FILTERS_CHANGED`)
+  - `chronos_state_events` → `static/js/state.js` (event-driven architecture)
+
+  Reference: `static/js/` directory
+</Accordion>
+
+<Accordion title="rules (5 skills)">
+  **Status**: Implemented via Sigma YAML or YARA files
+
+  **Examples**:
+  - `chronos_sigma_mitre_mapping` → 86 rules in `rules/sigma/`
+  - `chronos_yara_ransomware` → `rules/yara/ransomware/lockbit.yar`
+  - `chronos_yara_lolbins` → `rules/yara/lolbins.yar`
+  - `chronos_yara_c2` → `rules/yara/c2_frameworks.yar`
+  - `chronos_yara_infostealers` → `rules/yara/infostealers.yar`
+
+  **Coverage**:
+  - Sigma: TA0001-TA0011 + TA0040 (MITRE Kill Chain)
+  - YARA: Ransomware (LockBit, QILIN), LOLBins, C2 (Cobalt Strike, Sliver), webshells
+
+  Reference: `rules/sigma/`, `rules/yara/`
+</Accordion>
+
+<Accordion title="wired (4 skills)">
+  **Status**: Code exists but not connected to endpoints
+
+  **Examples**:
+  - `chronos_case_db` → `engine/case_db.py` (DuckDB CRUD, no endpoint)
+  - `chronos_case_router` → `engine/case_router.py` (FastAPI router, not mounted)
+  - `chronos_universal_ingestor` → `universal_ingestor.py` (orphaned, zero imports)
+  - `chronos_enrichment_cache` → `engine/enrichment_cache.py` (not called)
+
+  **Next Steps**: Etapa 2 roadmap activates case management.
+
+  Reference: `.agents/STATUS.md:15-20`
+</Accordion>
+
+<Accordion title="prompt_only (52 skills)">
+  **Status**: System prompts for AI agents, not yet implemented
+
+  **Examples**:
+  - `chronos_correlation_architect` → Cross-source entity correlation
+  - `chronos_mitre_strategist` → Kill chain sequence reconstruction
+  - `chronos_execution_forensics` → Process tree analysis
+  - `chronos_session_grouper` → Temporal session clustering
+  - `chronos_auto_narrative` → Natural language report generation
+
+  **Location**: `.agents/skills/*/SKILL.md`
+
+  **Priority List**: `engine/skill_router.py:get_high_priority_prompts()` returns top 5.
+
+  Reference: `engine/skill_router.py:250-280`
+</Accordion>
+
+### Registry CLI
+
+**View Summary**:
+```bash
+python engine/skill_router.py
+```
+
+**Output**:
+```
+=== Chronos-DFIR Skill Registry ===
+active: 10
+frontend: 5
+rules: 5
+wired: 4
+prompt_only: 52
+
+High Priority (Next Activation):
+1. chronos_correlation_architect
+2. chronos_chain_of_custody
+3. chronos_mitre_strategist
+4. chronos_execution_forensics
+5. chronos_session_grouper
+```
+
+Reference: `CLAUDE.md:242-244` (Skill registry protocol)
+
+---
+
+## Communication Documents
+
+The `.agents/` directory contains coordination files for session continuity.
+
+<Accordion title="STATUS.md (~30 lines)">
+  **Purpose**: Current project state snapshot
+
+  **Structure**:
+  ```markdown
+  # Chronos-DFIR Status Report
+  **Version**: v185
+  **Date**: 2026-03-08
+  **Overall Score**: 88/100
+
+  ## Area Scores
+  - Evidence Integrity: 95/100 (MFT FILETIME fixed v179)
+  - Data Engine: 95/100 (Pandas eliminated v180)
+  - Performance: 85/100 (CSS GPU hints v178)
+  - Detection: 90/100 (86 Sigma + 7 YARA)
+  - Frontend: 80/100 (Persistent selection v180.7)
+  - Testing: 60/100 (68/68 passing, 2 async skipped)
+
+  ## Active Etapa
+  - Etapa 1.5: Estabilización v2 (COMPLETED)
+  - Etapa 2: DuckDB Cases (PENDING)
+  ```
+
+  **Update Frequency**: After each major version increment.
+
+  Reference: `.agents/STATUS.md`
+</Accordion>
+
+<Accordion title="MANDATES.md (Prioritized Checklist)">
+  **Purpose**: Pending work items ranked by priority
+
+  **Example**:
+  ```markdown
+  # Chronos-DFIR Mandates
+
+  ## HIGH PRIORITY
+  - [ ] User verification of v185 fixes (Cmd+Shift+R cache clear)
+  - [ ] Etapa 2: `pip install duckdb`, verify CRUD, tests
+  - [ ] Sigma temporal conditions (`timeframe`, `count`)
+
+  ## MEDIUM PRIORITY
+  - [ ] Test suite expansion (pytest coverage > 80%)
+  - [ ] Pre-commit hook: auto-increment JS module versions
+
+  ## LOW PRIORITY
+  - [ ] app.py further decomposition (extract chart aggregation)
+  - [ ] CSS dark mode variables consolidation
+  ```
+
+  Reference: `.agents/MANDATES.md`
+</Accordion>
+
+<Accordion title="SCORECARD.md (Historical Tracking)">
+  **Purpose**: Track progress across versions
+
+  **Example**:
+  ```markdown
+  # Chronos-DFIR Scorecard
+
+  | Version | Date | Evidence | Data Eng | Perf | Detection | Frontend | Testing | Total |
+  |---------|------|----------|----------|------|-----------|----------|---------|-------|
+  | v177 | 03-08 | 60 | 65 | 60 | 75 | 70 | 50 | 63 |
+  | v179 | 03-08 | 95 | 70 | 75 | 85 | 75 | 55 | 76 |
+  | v180 | 03-08 | 95 | 95 | 80 | 90 | 80 | 60 | 83 |
+  | v185 | 03-08 | 95 | 95 | 85 | 90 | 80 | 60 | 84 |
+  ```
+
+  **Visualization**: Plot total score over time to track velocity.
+
+  Reference: `.agents/SCORECARD.md`
+</Accordion>
+
+<Accordion title="DECISION_LOG.md (ADRs)">
+  **Purpose**: Architecture Decision Records
+
+  **Example Entry**:
+  ```markdown
+  # ADR-003: Do NOT Integrate universal_ingestor.py Yet
+  **Date**: 2026-03-08
+  **Status**: APPROVED
+
+  **Context**: Gemini created `universal_ingestor.py` (290 lines) but never wired it. Antigravity flagged 0 imports.
+
+  **Decision**: Keep current `process_file()` in `app.py`. Do NOT integrate orphan code.
+
+  **Rationale**:
+  - Current parser is field-tested with 38K EVTX events
+  - Orphan code has no tests
+  - Risk of regression > benefit
+
+  **Alternatives Considered**:
+  1. Integrate immediately (REJECTED: no tests)
+  2. Delete file (REJECTED: may reuse during decomposition)
+
+  **Action**: Evaluate during Etapa 2 app.py decomposition.
+  ```
+
+  Reference: `.agents/DECISION_LOG.md`
+</Accordion>
+
+<Accordion title="RUNBOOK_TEMPLATE.md">
+  **Purpose**: Session checklist for multi-agent coordination
+
+  **Steps**:
+  1. Read `STATUS.md` + `MANDATES.md` (~60 lines)
+  2. Run `python engine/skill_router.py` for skill status
+  3. Check `SCORECARD.md` for trend analysis
+  4. Implement mandates (highest priority first)
+  5. Update `STATUS.md` with new scores
+  6. Commit with detailed message (reference scorecard delta)
+
+  Reference: `.agents/RUNBOOK_TEMPLATE.md`
+</Accordion>
+
+---
+
+## CI/CD & Quality Gates
+
+Chronos-DFIR enforces **automated quality checks** at commit and push time.
+
+### Pre-Commit Hook
+
+**Location**: `.git/hooks/pre-commit` (also `.pre-commit-config.yaml` for framework)
+
+**Checks**:
+1. **`app.py` line count** < 2000 lines
+2. **Pandas imports** = 0 occurrences
+3. **Pytest** passing (all tests except 2 known async failures)
+4. **Trailing whitespace** removal
+5. **YAML validation** (Sigma rules)
+6. **Large file detection** (block files > 10MB)
+
+**Example Output**:
+```bash
+git commit -m "v185: Row selection export fix"
+
+[INFO] Checking app.py line count...
+✓ app.py: 1528 lines (limit: 2000)
+
+[INFO] Checking for pandas imports...
+✓ No pandas imports found
+
+[INFO] Running pytest...
+✓ 68/68 tests passed (2 skipped)
+
+[INFO] Pre-commit checks passed ✓
+[main abc123d] v185: Row selection export fix
+```
+
+**Installation**:
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+Reference: `CLAUDE.md:245-247` (Pre-commit framework)
+
+---
+
+### GitHub Actions Workflow
+
+**Location**: `.github/workflows/ci.yml`
+
+**Triggers**: Push to `main`, pull requests
+
+**Jobs**:
+
+<Accordion title="1. Test Suite">
+  ```yaml
+  - name: Run pytest
+    run: |
+      pytest tests/ -v --tb=short
+  ```
+
+  **Requirements**: All tests pass (except 2 known async skips)
+</Accordion>
+
+<Accordion title="2. Code Constraints">
+  ```yaml
+  - name: Verify app.py line count
+    run: |
+      lines=$(wc -l < app.py)
+      if [ $lines -gt 2000 ]; then
+        echo "ERROR: app.py has $lines lines (max 2000)"
+        exit 1
+      fi
+
+  - name: Check for pandas
+    run: |
+      if grep -r "import pandas" --include="*.py" .; then
+        echo "ERROR: Pandas imports found"
+        exit 1
+      fi
+  ```
+</Accordion>
+
+<Accordion title="3. Sigma Rules Validation">
+  ```yaml
+  - name: Validate Sigma YAML
+    run: |
+      pip install pyyaml
+      python -c "
+      import yaml, glob
+      for f in glob.glob('rules/sigma/**/*.yml', recursive=True):
+          yaml.safe_load(open(f))
+      print('✓ All Sigma rules valid')
+      "
+  ```
+
+  **Current Status**: 86 rules validated, 0 errors
+</Accordion>
+
+<Accordion title="4. Skill Registry Integrity">
+  ```yaml
+  - name: Check skill registry
+    run: |
+      python engine/skill_router.py > /dev/null
+      echo "✓ Skill registry loaded successfully"
+  ```
+</Accordion>
+
+Reference: `CLAUDE.md:246` (GitHub Actions)
+
+---
+
+## Session Continuity Protocol
+
+When starting a new development session, follow this checklist:
+
+<Steps>
+  <Step title="Read Status Documents (~2 minutes)">
+    ```bash
+    cat .agents/STATUS.md        # Current state
+    cat .agents/MANDATES.md      # Pending work
+    tail -20 CLAUDE.md           # Recent changes
+    ```
+  </Step>
+
+  <Step title="Verify Skill Registry">
+    ```bash
+    python engine/skill_router.py
+    ```
+    Note active count and high-priority skills.
+  </Step>
+
+  <Step title="Check Scorecard Trend">
+    ```bash
+    cat .agents/SCORECARD.md | tail -5
+    ```
+    Identify areas with declining scores.
+  </Step>
+
+  <Step title="Run Tests">
+    ```bash
+    pytest tests/ -v
+    ```
+    Baseline: 68/68 passing (2 async skipped).
+  </Step>
+
+  <Step title="Review Recent Audits">
+    ```bash
+    ls -lt .agents/audits/ | head -5
+    ```
+    Check for unresolved Antigravity findings.
+  </Step>
+
+  <Step title="Select Mandate">
+    Choose highest-priority item from `MANDATES.md`.
+  </Step>
+
+  <Step title="Implement & Test">
+    - Write code
+    - Run `pytest`
+    - Test manually (if frontend)
+    - Update `CLAUDE.md` with engineering notes
+  </Step>
+
+  <Step title="Update Status">
+    ```bash
+    # Update scores in .agents/STATUS.md
+    # Add row to .agents/SCORECARD.md
+    # Mark mandate as completed
+    ```
+  </Step>
+
+  <Step title="Commit with Context">
+    ```bash
+    git add .
+    git commit -m "v186: [Feature] with scorecard delta +3"
+    ```
+  </Step>
+</Steps>
+
+Reference: `CLAUDE.md:61-64` (Session continuity)
+
+---
+
+## Multi-Agent Workflow Example
+
+### Real Case Study: MFT Timestamp Fix (v179)
+
+**Timeline**: 2026-03-08, ~4 hours
+
+#### Phase 1: Antigravity Audit
+
+**Finding**:
+```markdown
+## Critical Finding #1: MFT Timestamp Fabrication
+**File**: mft_engine.py:145
+**Code**: `created_time = datetime.now()`
+
+**Impact**: FORENSIC INTEGRITY VIOLATION
+- Timestamps are fabricated, not parsed from FILETIME
+- Makes evidence inadmissible in court
+- Violates Zimmerman Logic
+
+**Priority**: CRITICAL
+```
+
+Reference: `CLAUDE.md:126` (Antigravity V3)
+
+#### Phase 2: Claude Investigation
+
+**Actions**:
+1. Read `mft_engine.py` → Confirmed `datetime.now()` on line 145
+2. Check for existing FILETIME parser → Found `win64_to_datetime()` utility (unused)
+3. Research MFT structure → `$STANDARD_INFORMATION` attribute (type 0x10)
+4. Design fix: Parse FILETIME struct from binary MFT record
+
+#### Phase 3: Implementation
+
+**Code Changes**:
+```python
+# mft_engine.py (v179)
+import struct
+
+def _read_si_timestamps(mft_record: bytes) -> dict:
+    """Parse $STANDARD_INFORMATION attribute for FILETIME timestamps."""
+    si_offset = _find_attribute(mft_record, 0x10)  # Type 0x10 = $SI
+    if si_offset == -1:
+        return {"created": None, "modified": None, "accessed": None}
+    
+    # FILETIME struct: 8-byte little-endian integers
+    created_ft = struct.unpack('<Q', mft_record[si_offset:si_offset+8])[0]
+    modified_ft = struct.unpack('<Q', mft_record[si_offset+8:si_offset+16])[0]
+    accessed_ft = struct.unpack('<Q', mft_record[si_offset+16:si_offset+24])[0]
+    
+    return {
+        "created": win64_to_datetime(created_ft),
+        "modified": win64_to_datetime(modified_ft),
+        "accessed": win64_to_datetime(accessed_ft)
+    }
+```
+
+**Test**:
+```python
+# tests/test_mft.py
+def test_filetime_parsing():
+    # FILETIME 0x01D6A3E8E8F3C000 = 2020-01-15 10:30:00 UTC
+    ft = 0x01D6A3E8E8F3C000
+    dt = win64_to_datetime(ft)
+    assert dt.year == 2020
+    assert dt.month == 1
+    assert dt.day == 15
+```
+
+Reference: `CLAUDE.md:165-168` (v179 fix)
+
+#### Phase 4: Verification
+
+**Gemini Re-Audit**:
+```markdown
+## Gemini CLI Re-Check v179
+✓ MFT FILETIME parsing confirmed
+✓ Unit test passing
+✓ No `datetime.now()` in mft_engine.py
+
+**Status**: RESOLVED
+```
+
+**Antigravity Verification**:
+```bash
+$ grep -n "datetime.now()" mft_engine.py
+# (no output)
+
+$ pytest tests/test_mft.py::test_filetime_parsing
+PASSED
+```
+
+#### Phase 5: Scorecard Update
+
+```markdown
+# .agents/SCORECARD.md
+| v179 | 03-08 | 95 | 70 | 75 | 85 | 75 | 55 | 76 |
+# Evidence Integrity: 60 → 95 (+35)
+```
+
+**Commit**:
+```bash
+git commit -m "v179: Fix MFT timestamp fabrication (Critical Finding #1)
+
+- Rewrote _read_si_timestamps() with real FILETIME struct parsing
+- Activated win64_to_datetime() utility
+- Added unit test for FILETIME 0x01D6A3E8E8F3C000
+- Resolves Antigravity V3/V4/V5 Critical Finding #1
+- Scorecard: Evidence Integrity 60→95 (+35)"
+```
+
+Reference: `CLAUDE.md:165-191` (v179 full resolution)
+
+---
+
+## Best Practices
+
+<Accordion title="1. Verify Before Claiming">
+  **Anti-Pattern**: "Feature X is complete" without checking code.
+
+  **Best Practice**:
+  ```bash
+  # Before claiming Sigma temporal support:
+  grep -n "timeframe" engine/sigma_engine.py
+  # If output shows "# TODO: timeframe" → NOT complete
+  ```
+
+  **Consequence of Violation**: Antigravity flags false claims → trust erosion.
+</Accordion>
+
+<Accordion title="2. Update Status Documents">
+  **Anti-Pattern**: Commit code without updating `.agents/STATUS.md`.
+
+  **Best Practice**: After each version increment, update:
+  - `STATUS.md` (area scores)
+  - `SCORECARD.md` (historical row)
+  - `MANDATES.md` (mark completed items)
+
+  **Reason**: Enables next session to pick up context immediately.
+</Accordion>
+
+<Accordion title="3. Prioritize Critical Findings">
+  **Priority Hierarchy**:
+  1. **CRITICAL**: Forensic integrity violations (fabricated timestamps, hash corruption)
+  2. **HIGH**: Performance blockers (6GB file OOM crashes)
+  3. **MEDIUM**: Feature gaps (Sigma temporal conditions)
+  4. **LOW**: Code style (app.py line count, CSS consolidation)
+
+  **Rationale**: A forensically invalid tool is worthless, even if fast and feature-rich.
+</Accordion>
+
+<Accordion title="4. Increment JS Module Versions">
+  **Problem**: v181 cache-bust lesson (all v180.7 fixes invisible).
+
+  **Solution**:
+  ```javascript
+  // static/js/main.js
+  // ALWAYS increment ?v=XXX when ANY module changes
+  import { renderTimeline } from './charts.js?v=186';  // <-- Bump
+  import { initGrid } from './grid.js?v=186';          // <-- Bump
+  ```
+
+  **Automation**: Add pre-commit hook to auto-increment (pending).
+
+  Reference: `CLAUDE.md:330-332`
+</Accordion>
+
+<Accordion title="5. Test Real-World Datasets">
+  **Anti-Pattern**: Unit tests only (synthetic data).
+
+  **Best Practice**: Test with actual DFIR artifacts:
+  - 38K EVTX events (Sysmon)
+  - 2GB MFT export
+  - 500K CSV from Plaso
+  - Mixed ZIP bundle (Plist + EVTX)
+
+  **v180.7 Example**: 8 bugs found only with 38K EVTX:
+  - Hex corruption in Excel
+  - Row selection not persisting
+  - Dashboard not updating with filters
+
+  Reference: `CLAUDE.md:281-299` (v180.7 stabilization)
+</Accordion>
+
+---
+
+## Development Phases
+
+| Phase | Status | Multi-Agent Involvement |
+|-------|--------|-------------------------|
+| **Etapa 0** | ✅ COMPLETED | Claude: 5 bug fixes; Antigravity: Verified export integrity |
+| **Etapa 1** | ✅ COMPLETED | Claude: Sigma evidence enrichment; Gemini: YARA integration audit |
+| **Etapa 1.5** | ✅ COMPLETED | All 3 agents: 8 bugs (hex, selection, dashboard, PDF) |
+| **Etapa 2** | 🟡 PENDING | Claude: DuckDB integration; Gemini: Schema design review |
+| **Etapa 3** | 🟡 PENDING | Claude: Sidebar UI; Gemini: React/Vue feasibility study |
+| **Etapa 4** | 🟡 PENDING | Claude: Cross-file correlation; Gemini: Performance profiling |
+| **Etapa 5** | 🟡 PENDING | Claude: MCP server; Gemini: LLM integration patterns |
+| **Etapa 6** | 🟡 PENDING | Claude: Auto-narrative; Gemini: Natural language validation |
+
+Reference: `README.md:306-318` (Roadmap)
+
+---
+
+## Related Documentation
+
+<CardGroup cols={2}>
+  <Card title="System Architecture" icon="sitemap" href="/advanced/architecture">
+    Learn about engine modules and data flow
+  </Card>
+  <Card title="Performance Tuning" icon="gauge-high" href="/advanced/performance">
+    Deep dive into Polars vectorization and streaming I/O
+  </Card>
+</CardGroup>

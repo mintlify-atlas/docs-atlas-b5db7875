@@ -1,0 +1,180 @@
+---
+title: Introduction to Chronos-DFIR
+description: Advanced forensic timeline explorer and incident response platform for DFIR professionals
+---
+
+# Chronos-DFIR Web
+
+**Version:** BETA 1.1 (v185)
+
+Chronos-DFIR Web is a comprehensive forensic analysis platform designed for digital forensic analysts and Incident Response (DFIR) teams. It streamlines the ingestion, normalization, enrichment, and interactive visualization of large volumes of events from multiple sources, building a unified timeline for precise chronological reconstruction of cyber incidents.
+
+<Info>
+Chronos-DFIR constructs unified timelines from diverse forensic artifacts, enabling investigators to reconstruct incidents with precision and speed.
+</Info>
+
+## Purpose and Vision
+
+The primary goal of Chronos-DFIR is to eliminate the friction between forensic data collection and actionable intelligence. By automating parsing, normalization, and threat detection across multiple artifact types, investigators can focus on analysis rather than data wrangling.
+
+### Key Problems Solved
+
+- **Format Fragmentation**: Ingest 15+ forensic formats (EVTX, MFT, Plist, CSV, JSON, SQLite, Parquet) through a single interface
+- **Manual Correlation**: Automatic cross-source event correlation and session profiling
+- **Detection Overhead**: Built-in Sigma and YARA rule engines detect threats in real-time during ingestion
+- **Context Loss**: Rich metadata extraction and MITRE ATT&CK mapping for every detection
+- **Scale Challenges**: Streaming architecture handles 6GB+ files without memory saturation
+
+## Core Capabilities
+
+<CardGroup cols={2}>
+  <Card title="Multi-Format Ingestion" icon="upload">
+    Drag-and-drop support for forensic artifacts (EVTX, MFT, Plist) and reports (CSV, XLSX, JSON, Parquet, SQLite, TXT)
+  </Card>
+  
+  <Card title="Automated Detection" icon="shield-check">
+    86+ Sigma rules and 7 YARA rulesets for real-time threat detection during parsing
+  </Card>
+  
+  <Card title="Interactive Timeline" icon="chart-line">
+    Professional dark-mode grid with virtual DOM rendering, filtering, and histogram visualization
+  </Card>
+  
+  <Card title="Threat Intelligence" icon="brain">
+    Automatic enrichment via VirusTotal, AbuseIPDB, URLScan, and HaveIBeenPwned integrations
+  </Card>
+</CardGroup>
+
+### Detection and Analysis Engines
+
+**Sigma Detection Engine** (`engine/sigma_engine.py`)
+- 86+ rules covering MITRE ATT&CK tactics TA0001-TA0011, TA0040
+- OWASP Top 10 web attack patterns
+- Dynamic YAML-to-Polars compilation for high-speed evaluation
+- Sample evidence extraction with forensic context columns
+
+**YARA Scanning** (`rules/yara/`)
+- Ransomware signatures (LockBit, QILIN/Agenda)
+- LOLBins and C2 frameworks (Cobalt Strike, Sliver, Meterpreter)
+- Infostealers, webshells, and macOS persistence mechanisms
+
+**Forensic Analyzers** (`engine/forensic.py`)
+- Risk assessment engine with smart scoring (Low/Medium/High/Critical)
+- Cross-source correlation and session profiling
+- Identity and asset discovery
+- Execution artifact detection
+
+## Target Audience
+
+<CardGroup cols={3}>
+  <Card title="DFIR Analysts" icon="magnifying-glass">
+    Investigators analyzing endpoint artifacts, logs, and memory dumps for incident reconstruction
+  </Card>
+  
+  <Card title="Incident Responders" icon="fire-extinguisher">
+    SOC teams triaging alerts and conducting rapid triage during active incidents
+  </Card>
+  
+  <Card title="Threat Hunters" icon="crosshairs">
+    Proactive hunters correlating TTPs across datasets to uncover advanced persistent threats
+  </Card>
+</CardGroup>
+
+## Use Cases
+
+### Ransomware Investigation
+
+1. Upload encrypted host's MFT + EVTX logs
+2. Automatic YARA detection flags ransomware signatures
+3. Timeline shows encryption sequence with millisecond precision
+4. Sigma rules detect privilege escalation and defense evasion TTPs
+5. Export enriched report with MITRE kill chain mapping
+
+### Web Application Breach
+
+1. Ingest web server access logs (CSV/JSON) + WAF alerts
+2. Sigma rules detect SQL injection, XSS, and command injection patterns
+3. Cross-correlation identifies attacker IP and session profiles
+4. Threat intelligence enrichment reveals known malicious infrastructure
+5. Generate executive summary with risk scoring
+
+### macOS Persistence Hunting
+
+1. Upload LaunchAgents/LaunchDaemons Plist bundles (ZIP)
+2. Automatic extraction of binary paths and signatures
+3. YARA rules flag TCC bypass and Gatekeeper evasion
+4. Timeline correlates with Unified Log events
+5. Identify persistence mechanisms mapped to MITRE T1543
+
+### Memory Forensics Triage
+
+1. Import Volatility pslist output (TXT/CSV)
+2. Parse process tree with parent-child relationships
+3. Flag suspicious processes (rare executables, LOLBins)
+4. Correlate with network connections from netscan
+5. Export filtered process list for deep-dive analysis
+
+## Technical Foundation
+
+<Note>
+Chronos-DFIR is built on a streaming-first architecture optimized for Apple Silicon M4 processors, using Polars for vectorized data processing and FastAPI for async I/O.
+</Note>
+
+**Architecture Highlights:**
+
+- **Backend**: Python 3.12+, FastAPI, Uvicorn
+- **Data Engine**: Polars (vectorized, zero-copy), PyArrow
+- **Frontend**: Tabulator.js (virtual DOM), Chart.js
+- **Detection**: Sigma YAML compiler, YARA Python bindings
+- **Exports**: WeasyPrint (PDF), xlsxwriter (Excel), native CSV/JSON
+
+**Performance:**
+
+- Streams 6GB+ files without loading into memory
+- Processes 1M+ events with sub-second filter response
+- Parallel analysis pipeline (9 concurrent tasks)
+- Lazy evaluation for out-of-core computation
+
+## What Makes Chronos-DFIR Different
+
+<CardGroup cols={2}>
+  <Card title="Offline-First Design" icon="plane-slash">
+    100% local execution. No cloud dependencies. All detection rules are embedded YAML/YARA files.
+  </Card>
+  
+  <Card title="Forensic Integrity" icon="seal">
+    SHA256 chain of custody during upload. Timestamps never fabricated. Hex values preserved in exports.
+  </Card>
+  
+  <Card title="Dark Mode Focused" icon="moon">
+    Professional UI with optimized data-ink ratio. Critical alerts highlighted, noise suppressed.
+  </Card>
+  
+  <Card title="AI-Ready Exports" icon="robot">
+    Context JSON exports optimized for LLM consumption with token-efficient formatting.
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get Chronos-DFIR running in 5 minutes with your first artifact upload
+  </Card>
+  
+  <Card title="Installation Guide" icon="download" href="/installation">
+    Detailed setup instructions for Python environment and dependencies
+  </Card>
+</CardGroup>
+
+---
+
+## Development and Support
+
+Chronos-DFIR is actively developed with a multi-agent workflow:
+
+- **Claude** (Architect): Design, implementation, rule authoring
+- **Gemini CLI** (Engineer): QA audits, performance profiling
+- **Antigravity** (Auditor): Counter-audits and verification
+
+The project follows strict forensic integrity standards and is verified through automated CI/CD pipelines with 68+ passing tests.

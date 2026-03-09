@@ -1,0 +1,286 @@
+---
+title: 'File Ingestion'
+description: 'Multi-format forensic evidence ingestion with streaming upload and chain of custody'
+icon: 'file-import'
+---
+
+## Overview
+
+Chronos-DFIR features a powerful multi-format ingestion engine that accepts forensic artifacts and reports through an intuitive drag-and-drop interface. The system handles files up to **6GB+** using streaming uploads and maintains chain of custody with SHA256 hashing.
+
+## Supported Formats
+
+<CardGroup cols={2}>
+  <Card title="Forensic Artifacts" icon="shield-halved">
+    Native forensic evidence formats with specialized parsers
+  </Card>
+  <Card title="Generic Reports" icon="table">
+    Output from DFIR tools like Plaso, KAPE, and EDR platforms
+  </Card>
+</CardGroup>
+
+### Forensic Artifacts
+
+Chronos-DFIR provides optimized parsers for native forensic artifacts:
+
+<Steps>
+  <Step title="Windows Event Logs (EVTX)">
+    Processes Windows Event Logs with automatic extraction of EventID, Level, Provider, Computer, and descriptions. Uses the `evtx_engine.py` module for binary parsing.
+    
+    **Key features:**
+    - Direct binary EVTX parsing
+    - Automatic metadata extraction
+    - Windows-specific normalization
+  </Step>
+  
+  <Step title="MFT (Master File Table)">
+    Deep analysis of NTFS filesystem metadata with **real FILETIME parsing** from `$STANDARD_INFORMATION` attributes.
+    
+    ```python
+    # From mft_engine.py - Real FILETIME parsing (v179 fix)
+    def _read_si_timestamps(mft_record: bytes, offset: int) -> dict:
+        """
+        Parse $STANDARD_INFORMATION attribute (type 0x10) FILETIME values.
+        Returns dict with Created, Modified, MFT_Modified, Accessed timestamps.
+        """
+        si_data = mft_record[offset:offset+48]
+        if len(si_data) < 48:
+            return {"Created": None, "Modified": None, 
+                    "MFT_Modified": None, "Accessed": None}
+        
+        # Parse FILETIME values using struct.unpack
+        created_ft, modified_ft, mft_ft, accessed_ft = struct.unpack(
+            "<QQQQ", si_data[0:32]
+        )
+        
+        return {
+            "Created": win64_to_datetime(created_ft),
+            "Modified": win64_to_datetime(modified_ft),
+            "MFT_Modified": win64_to_datetime(mft_ft),
+            "Accessed": win64_to_datetime(accessed_ft)
+        }
+    ```
+    
+    <Warning>
+      **Forensic Integrity:** As of v179, MFT timestamps are parsed from real FILETIME structures. Never use fabricated timestamps like `datetime.now()` in forensic analysis.
+    </Warning>
+  </Step>
+  
+  <Step title="macOS Property Lists (Plist)">
+    Detects and parses macOS Plist files including LaunchAgents and LaunchDaemons used in persistence mechanisms.
+    
+    ```python
+    # From engine/ingestor.py
+    def _parse_single_plist(file_path: str) -> pl.DataFrame:
+        import plistlib
+        with open(file_path, 'rb') as fp:
+            plist_data = plistlib.load(fp)
+        
+        # Sanitize values (bytes → hex, nested → str)
+        sanitized = [{k: _sanitize_plist_val(v) 
+                      for k, v in row.items()} for row in plist_data]
+        
+        return pl.DataFrame(sanitized, strict=False)
+    ```
+    
+    **Extracted metadata:**
+    - Launch path and binaries
+    - RunAtLoad / KeepAlive flags
+    - Program arguments and signatures
+  </Step>
+</Steps>
+
+### Generic Report Formats
+
+<Tabs>
+  <Tab title="Structured Data">
+    - **CSV / TSV** - Reports from Plaso, KAPE, automactc
+    - **Excel (.xlsx)** - Spreadsheet exports from DFIR tools
+    - **JSON / JSONL / NDJSON** - Modern structured event logs
+    - **Parquet** - Columnar format for massive Big Data hunting datasets
+  </Tab>
+  
+  <Tab title="Databases">
+    - **SQLite (.db, .sqlite3)** - Browser history, persistence databases, telemetry
+    
+    ```python
+    # From engine/ingestor.py - Zero-pandas SQLite ingestion
+    import sqlite3
+    conn = sqlite3.connect(file_path)
+    cursor = conn.cursor()
+    
+    # Auto-detect main table (events, logs, timeline, entries)
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+    tables = [r[0] for r in cursor.fetchall() 
+              if not r[0].startswith('sqlite_')]
+    
+    cursor.execute(f'SELECT * FROM "{target_table}"')
+    col_names = [desc[0] for desc in cursor.description]
+    rows = cursor.fetchall()
+    
+    df = pl.DataFrame(
+        {col_names[i]: [row[i] for row in rows] 
+         for i in range(len(col_names))},
+        strict=False
+    )
+    ```
+  </Tab>
+  
+  <Tab title="Text & Logs">
+    - **TXT / LOG** - Unified logs, syslog, whitespace-separated process lists
+    - **PSList** - Volatility process memory dumps
+    
+    Supports multiple parsing strategies:
+    1. macOS Unified Log regex parsing
+    2. `ls -la` triage output (persistence enumeration)
+    3. Whitespace-separated fallback
+  </Tab>
+</Tabs>
+
+## Drag & Drop Interface
+
+The ingestion interface provides a seamless upload experience:
+
+```javascript
+// Frontend automatically detects file types
+const validExtensions = [
+  '.csv', '.xlsx', '.tsv', '.parquet',
+  '.json', '.jsonl', '.ndjson',
+  '.evtx', '.mft', '.plist',
+  '.db', '.sqlite', '.sqlite3',
+  '.pslist', '.txt', '.log', '.zip'
+];
+```
+
+<Info>
+  **ZIP Support:** ZIP files are treated as bundles of macOS Plist files (LaunchAgents/LaunchDaemons). Each Plist is extracted and parsed individually.
+</Info>
+
+## Streaming Upload for Large Files
+
+For files larger than 6GB, Chronos uses **streaming upload** to prevent memory saturation:
+
+```python
+# From app.py:166-186
+@app.post("/upload")
+async def process_file(file: UploadFile = File(...)):
+    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    
+    # STREAMING UPLOAD: Stream directly to disk (6GB+ files)
+    # Chain of Custody: compute SHA256 hash during upload (zero extra I/O)
+    sha256 = hashlib.sha256()
+    with open(file_path, "wb") as buffer:
+        while chunk := file.file.read(8192):  # 8KB chunks
+            sha256.update(chunk)
+            buffer.write(chunk)
+    
+    file_hash = sha256.hexdigest()
+    file_size = os.path.getsize(file_path)
+    
+    logger.info(f"Chain of Custody — {file.filename}: "
+                f"SHA256={file_hash}, Size={file_size}")
+```
+
+<Note>
+  **Zero Overhead:** SHA256 hash is computed **during** the streaming upload with no additional file read operations, maintaining performance even for multi-gigabyte evidence files.
+</Note>
+
+## Chain of Custody
+
+Every file upload includes cryptographic verification:
+
+```json
+{
+  "filename": "Security.evtx",
+  "parsed_file": "import_Security_1710234567.csv",
+  "row_count": 38464,
+  "chain_of_custody": {
+    "sha256": "a3f5d8c9e2b1f4a7c6d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+    "size_bytes": 125829120,
+    "upload_timestamp": "2026-03-09T14:22:47.123456Z"
+  },
+  "artifact_type": "EVTX",
+  "file_category": "Windows/EventLog"
+}
+```
+
+<Warning>
+  **Forensic Standard:** The SHA256 hash and file size are computed at ingestion time and should be recorded in your investigation documentation to maintain evidence integrity.
+</Warning>
+
+## Automatic Normalization
+
+All ingested files undergo normalization to create a unified timeline:
+
+<Steps>
+  <Step title="Column Detection">
+    Automatic standardization of `Time`, `EventID`, `Level`, IP addresses, and user fields regardless of source format.
+    
+    ```python
+    # From engine/ingestor.py:146-180
+    rename_mapping = {}
+    for col in cols:
+        col_lower = col.strip().lower()
+        if col_lower == '_time':
+            final_col = 'Time'
+        elif col_lower == '_id':
+            final_col = 'Original_Id'
+        elif col.isdigit():
+            final_col = f'Field_{col}'
+        else:
+            # Capitalize first letter
+            final_col = col[0].upper() + col[1:]
+        rename_mapping[col] = final_col
+    ```
+  </Step>
+  
+  <Step title="Row Indexing">
+    Stable `_id` column added to every row for tracking selections and filtering.
+    
+    ```python
+    lf = lf.with_row_index(name="_id", offset=1)
+    ```
+  </Step>
+  
+  <Step title="Streaming Sink">
+    For large files, normalized data is written using Polars' streaming sink to avoid memory overflow:
+    
+    ```python
+    if lf is not None:  # LazyFrame (large file)
+        lf.sink_csv(dest_path)  # Streaming write
+    else:  # DataFrame (small file)
+        df_eager.write_csv(dest_path)
+    ```
+  </Step>
+</Steps>
+
+## Performance Characteristics
+
+| File Size | Processing Time | Memory Usage | Method |
+|-----------|----------------|--------------|--------|
+| < 100MB | < 5 seconds | ~50MB | Eager DataFrame |
+| 100MB - 1GB | 10-30 seconds | ~100MB | LazyFrame scan |
+| 1GB - 6GB | 1-3 minutes | ~200MB | Streaming sink |
+| 6GB+ | 3-10 minutes | ~200MB | Chunked streaming |
+
+<Info>
+  **Hardware Optimized:** Chronos is optimized for Apple Silicon M4 with ARM NEON vectorization and unified memory architecture. All Polars operations leverage SIMD acceleration.
+</Info>
+
+## Technical Stack
+
+- **Backend:** Python 3.12+, FastAPI, uvicorn (async-first)
+- **Data Engine:** Polars (vectorized, zero-pandas)
+- **File I/O:** Streaming with `scan_*` / `sink_*` for datasets > 50MB
+- **Parsers:** `evtx_engine.py`, `mft_engine.py`, `engine/ingestor.py`
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Timeline Analysis" icon="chart-line" href="/features/timeline-analysis">
+    Analyze ingested data with interactive timelines
+  </Card>
+  <Card title="Threat Detection" icon="shield-exclamation" href="/features/threat-detection">
+    Apply Sigma and YARA rules for detection
+  </Card>
+</CardGroup>

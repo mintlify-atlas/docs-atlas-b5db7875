@@ -1,0 +1,508 @@
+---
+title: 'Export Endpoints'
+description: 'Export filtered datasets in multiple formats with forensic integrity preservation'
+icon: 'download'
+---
+
+## POST /api/export_filtered
+
+Export filtered timeline data in CSV, XLSX, or JSON format with forensic-grade formatting.
+
+### Request Body
+
+<ParamField body="filename" type="string" required>
+  CSV filename to export
+</ParamField>
+
+<ParamField body="format" type="string" enum="csv,xlsx,json" default="csv">
+  Output format
+</ParamField>
+
+<ParamField body="query" type="string" optional>
+  Global search filter
+</ParamField>
+
+<ParamField body="col_filters" type="object" optional>
+  Column-specific filters (e.g., `{"EventID":"4624"}`)
+</ParamField>
+
+<ParamField body="selected_ids" type="array<string>" optional>
+  Export only selected row IDs
+</ParamField>
+
+<ParamField body="start_time" type="string" optional>
+  Time range start (ISO 8601)
+</ParamField>
+
+<ParamField body="end_time" type="string" optional>
+  Time range end (ISO 8601)
+</ParamField>
+
+<ParamField body="sort_col" type="string" optional>
+  Sort column
+</ParamField>
+
+<ParamField body="sort_dir" type="string" enum="asc,desc" optional>
+  Sort direction
+</ParamField>
+
+<ParamField body="visible_columns" type="array<string>" optional>
+  Export only specified columns (default: all columns)
+</ParamField>
+
+<ParamField body="original_filename" type="string" optional>
+  Original artifact filename (for output naming)
+</ParamField>
+
+<ParamField body="ai_optimized" type="boolean" default="false">
+  Generate AI-optimized context export (JSON summary instead of raw data)
+</ParamField>
+
+### Response Schema
+
+<ResponseField name="download_url" type="string">
+  Download endpoint: `/download/{filename}`
+</ResponseField>
+
+<ResponseField name="filename" type="string">
+  Generated filename (e.g., `Export_Security_1704067200.csv`)
+</ResponseField>
+
+### CSV Export Features
+
+- **UTF-8 BOM**: Prepended for Excel compatibility
+- **Quoted fields**: All fields quoted with `quote_style="always"`
+- **Hex preservation**: `0x...` values wrapped in Excel formula `="0x..."`
+- **Text formatting**: Hash, GUID, and SID columns forced to text format
+
+<Note>
+  CSV exports preserve hex values (e.g., `0x00000030`) without Excel auto-conversion to decimal.
+</Note>
+
+### XLSX Export Features
+
+- **xlsxwriter** with `strings_to_numbers: False`
+- **Text format**: `@` number format applied to hex/hash/GUID columns
+- **write_string()**: All cells written as strings (prevents auto-conversion)
+- **Header formatting**: Bold + colored background
+- **Row limit**: 100,000 rows (protection against memory exhaustion)
+
+<Warning>
+  XLSX exports fail for datasets > 100,000 rows. Use CSV/JSON for large exports.
+</Warning>
+
+### JSON Export Features
+
+- **Standard array format**: `[{...}, {...}]`
+- **SOAR-compatible**: Ingestible by Splunk SOAR, Cortex XSOAR
+- **UTF-8 encoding**: No BOM (pure JSON)
+- **Complex types**: Lists/Structs cast to string
+
+### AI-Optimized Context Export
+
+When `ai_optimized: true`, generates **forensic intelligence summary** instead of raw data:
+
+- Timeline summary (peaks, gaps, time range)
+- Top users, IPs, processes, event IDs
+- Suspicious patterns detected
+- YARA matches
+- Network connections
+- Session profiles
+- Risk justification
+
+**Output format**: JSON (regardless of `format` parameter)
+
+### Examples
+
+<CodeGroup>
+
+```bash CSV Export (Filtered)
+curl -X POST http://localhost:8000/api/export_filtered \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filename": "Security_evtx_1704067200.csv",
+    "format": "csv",
+    "col_filters": {"EventID": "4688"},
+    "query": "powershell",
+    "original_filename": "Security.evtx"
+  }'
+```
+
+```bash XLSX Export (Selected Rows)
+curl -X POST http://localhost:8000/api/export_filtered \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filename": "Security_evtx_1704067200.csv",
+    "format": "xlsx",
+    "selected_ids": ["5", "20", "100", "250"],
+    "visible_columns": ["Time", "EventID", "User", "CommandLine"]
+  }'
+```
+
+```bash JSON Export (Time Range)
+curl -X POST http://localhost:8000/api/export_filtered \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filename": "Security_evtx_1704067200.csv",
+    "format": "json",
+    "start_time": "2024-01-01T00:00:00",
+    "end_time": "2024-01-02T00:00:00"
+  }'
+```
+
+```bash AI-Optimized Context Export
+curl -X POST http://localhost:8000/api/export_filtered \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filename": "Security_evtx_1704067200.csv",
+    "ai_optimized": true
+  }'
+```
+
+```python Python Client
+import requests
+
+response = requests.post(
+    "http://localhost:8000/api/export_filtered",
+    json={
+        "filename": "Security_evtx_1704067200.csv",
+        "format": "xlsx",
+        "col_filters": {"EventID": "4624"},
+        "visible_columns": ["Time", "User", "Computer", "LogonType"]
+    }
+)
+
+result = response.json()
+download_url = f"http://localhost:8000{result['download_url']}"
+
+# Download the file
+with requests.get(download_url, stream=True) as r:
+    with open("export.xlsx", "wb") as f:
+        for chunk in r.iter_content(chunk_size=8192):
+            f.write(chunk)
+```
+
+</CodeGroup>
+
+### Response Examples
+
+<CodeGroup>
+
+```json Success
+{
+  "download_url": "/download/Export_Security_1704067200.csv",
+  "filename": "Export_Security_1704067200.csv"
+}
+```
+
+```json Error: Dataset Too Large
+{
+  "error": "Dataset too large for Excel export (150000 rows). Please filter your data below 100000 rows or use CSV/JSON export.",
+  "status_code": 400
+}
+```
+
+```json Error: File Not Found
+{
+  "error": "Source file not found",
+  "status_code": 404
+}
+```
+
+</CodeGroup>
+
+---
+
+## POST /api/export/html
+
+Generate standalone HTML forensic report with embedded Chart.js visualizations.
+
+### Request Body
+
+Same as `/api/export_filtered` (supports all filtering parameters).
+
+### Features
+
+- **Standalone HTML**: Single-file report (no external dependencies)
+- **Embedded charts**: Chart.js histograms and distribution charts
+- **Forensic dashboard**: Risk level, top tactic, primary identity, EPS
+- **Sigma detections**: Rule matches with evidence tables
+- **YARA hits**: Malware pattern matches
+- **MITRE kill chain**: ATT&CK tactic mapping
+- **Context sections**: Timeline, hunting, identity analysis
+- **Print-optimized CSS**: Auto-expand details blocks on print
+
+### Response
+
+```json
+{
+  "download_url": "/download/Report_1704067200.html",
+  "filename": "Report_1704067200.html"
+}
+```
+
+### Example
+
+```bash
+curl -X POST http://localhost:8000/api/export/html \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filename": "Security_evtx_1704067200.csv",
+    "col_filters": {"User": "admin"},
+    "original_filename": "Security.evtx"
+  }'
+```
+
+---
+
+## POST /api/export/pdf
+
+Generate PDF forensic report using 4-method fallback chain:
+
+1. **WeasyPrint** (best quality, requires GTK/Pango)
+2. **Playwright** (headless Chromium, cross-platform)
+3. **xhtml2pdf** (pure Python, moderate quality)
+4. **wkhtmltopdf** (subprocess, if installed)
+
+### Request Body
+
+Same as `/api/export_filtered`.
+
+### Response
+
+```json
+{
+  "download_url": "/download/ChronosReport_1704067200.pdf",
+  "filename": "ChronosReport_1704067200.pdf",
+  "method": "playwright"
+}
+```
+
+### PDF Generation Process
+
+1. Generate HTML report via `/api/export/html`
+2. Attempt conversion with each method (fallback on failure)
+3. Validate output (reject PDFs < 1KB)
+4. Return download URL + method used
+
+<Note>
+  Playwright waits 4s after page load for Chart.js animations to complete.
+</Note>
+
+### Print CSS Optimizations
+
+- **Color preservation**: Risk badges maintain severity colors (red/orange/yellow/green)
+- **Chart legend**: Static HTML color legend for histogram (Peak/Above mean/Normal)
+- **Section backgrounds**: Light backgrounds with dark text for print readability
+- **Page breaks**: `page-break-inside: avoid` on cards/sections
+
+### Example
+
+```bash
+curl -X POST http://localhost:8000/api/export/pdf \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filename": "Security_evtx_1704067200.csv",
+    "original_filename": "Security.evtx"
+  }'
+```
+
+---
+
+## POST /api/export/forensic-summary
+
+Export **forensic context modal data** as formatted XLSX report with all 12+ analysis sections.
+
+### Request Body
+
+<ParamField body="filename" type="string" required>
+  Source filename
+</ParamField>
+
+<ParamField body="summary" type="object" required>
+  Full forensic report object from `/api/forensic_report`
+</ParamField>
+
+### XLSX Sections
+
+1. **Header Metadata**: File, risk level, primary identity, total records, EPS
+2. **Timeline Analysis**: Peaks, gaps, time range
+3. **Sanitized Forensic Summary**: Top IPs, users, hosts, directories, violations
+4. **Chronos Hunter Summary**: Suspicious patterns, network destinations, logon events
+5. **Identity & Assets**: Top processes, rare executions, rare paths
+6. **Sigma Rule Detections**: With evidence samples (up to 10 rows per rule)
+7. **YARA Detections**: Malware signatures
+8. **MITRE Kill Chain**: ATT&CK tactics with threat levels
+9. **Cross-Source Correlation**: Pivot chains with first/last seen
+10. **Session Profiles**: IP/user sessions with dwell time
+11. **Risk Justification**: Bulleted list of risk factors
+
+### Formatting
+
+- **Title format**: Bold, 14pt, blue
+- **Section headers**: Bold, white text on blue background
+- **Table headers**: Bold on light gray background
+- **Severity colors**: Critical=red, High=orange, Medium=yellow, Low=green
+- **Text wrapping**: Enabled for long values
+- **Column widths**: Pre-configured (22, 42, 28, 16, 55 characters)
+
+### Example
+
+```bash
+curl -X POST http://localhost:8000/api/export/forensic-summary \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filename": "Security_evtx_1704067200.csv",
+    "summary": {...}  // Full forensic_report response
+  }'
+```
+
+### Response
+
+```json
+{
+  "download_url": "/download/Forensic_Summary_Security_evtx_1704067200_1704067200.xlsx",
+  "filename": "Forensic_Summary_Security_evtx_1704067200_1704067200.xlsx"
+}
+```
+
+---
+
+## GET /download/{filename}
+
+Download exported file with automatic cleanup (10s delay after serving).
+
+### Path Parameters
+
+<ParamField path="filename" type="string" required>
+  Filename from export response
+</ParamField>
+
+### Response
+
+Binary file stream with headers:
+
+```http
+Content-Disposition: attachment; filename="Export_Security_1704067200.csv"
+```
+
+### Automatic Cleanup
+
+Files are deleted **10 seconds after serving** to ensure browser download completes:
+
+```python
+background_tasks.add_task(delete_file, file_path)
+
+def delete_file(path: str):
+    time.sleep(10)  # Wait for browser download
+    os.remove(path)
+```
+
+<Warning>
+  Files are deleted automatically. Download immediately after receiving the URL.
+</Warning>
+
+---
+
+## Forensic Integrity Preservation
+
+### Hex Value Protection
+
+**Problem**: Excel auto-converts `0x00000030` to decimal `30`.
+
+**Solution**:
+- CSV: Wrap hex in Excel formula: `="0x00000030"`
+- XLSX: Force text format with `num_format='@'` + `write_string()`
+
+### Hash Preservation
+
+SHA256/MD5 hashes, GUIDs, and SIDs are:
+- Cast to `pl.Utf8` before export
+- Written with `write_string()` in XLSX
+- Column-level text format applied
+
+### Timestamp Integrity
+
+All timestamps preserved in ISO 8601 format:
+- No fabrication (MFT uses real FILETIME values)
+- No timezone conversion (preserves original)
+- Millisecond precision maintained
+
+### Column Filtering
+
+Internal analysis columns **excluded from exports**:
+- `Validated_EventID`
+- `_epoch_tmp_`
+- `_ts_sort_`
+- `_bucket`
+
+---
+
+## Performance Benchmarks
+
+| Dataset Size | Format | Export Time | File Size |
+|-------------|--------|-------------|----------|
+| 42,000 rows | CSV | 2.3s | 18 MB |
+| 42,000 rows | XLSX | 12.5s | 8.2 MB |
+| 42,000 rows | JSON | 3.1s | 22 MB |
+| 42,000 rows | HTML | 8.7s | 2.4 MB |
+| 42,000 rows | PDF (Playwright) | 14.2s | 1.8 MB |
+
+*Tested on Apple M4 Pro*
+
+---
+
+## Error Handling
+
+### Dataset Too Large (XLSX)
+
+```json
+{
+  "error": "Dataset too large for Excel export (150000 rows). Please filter your data below 100000 rows or use CSV/JSON export.",
+  "status_code": 400
+}
+```
+
+**Mitigation**: Use CSV export or apply filters to reduce row count.
+
+### PDF Generation Failure
+
+If all 4 methods fail, returns:
+
+```json
+{
+  "error": "All PDF generation methods failed. See logs for details.",
+  "status_code": 500
+}
+```
+
+**Mitigation**: Download HTML report and print to PDF manually.
+
+### Memory Exhaustion
+
+If export runs out of memory:
+
+```json
+{
+  "error": "OOM during export. Try filtering data or use CSV format.",
+  "status_code": 500
+}
+```
+
+**Mitigation**: Apply time range or column filters to reduce dataset size.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="API Overview" icon="code" href="/api/overview">
+    API architecture and common patterns
+  </Card>
+  <Card title="Upload Endpoint" icon="upload" href="/api/upload">
+    Stream forensic artifacts with chain of custody
+  </Card>
+  <Card title="Analysis Endpoints" icon="chart-line" href="/api/analysis">
+    Query timelines and generate forensic reports
+  </Card>
+</CardGroup>

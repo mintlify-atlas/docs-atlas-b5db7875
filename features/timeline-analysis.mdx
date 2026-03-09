@@ -1,0 +1,341 @@
+---
+title: 'Timeline Analysis'
+description: 'Interactive timeline visualization with adaptive bucketing, anomaly detection, and trend analysis'
+icon: 'chart-line'
+---
+
+## Overview
+
+Chronos-DFIR's timeline analysis engine provides **interactive histogram visualization** with intelligent time bucketing, anomaly detection, and trend analysis. The system dynamically adjusts granularity based on the timespan of your investigation.
+
+## Interactive Timeline Visualization
+
+The timeline uses **Chart.js** for responsive, interactive rendering with time-based filtering:
+
+```javascript
+// Frontend chart initialization
+const timelineChart = new Chart(ctx, {
+  type: 'bar',
+  data: {
+    labels: timeline_labels,  // Adaptive time buckets
+    datasets: [{
+      label: 'Events',
+      data: event_counts,
+      backgroundColor: riskColorMapping  // Critical=red, Normal=blue
+    }]
+  },
+  options: {
+    animation: { duration: 300 },  // Smooth transitions
+    scales: {
+      y: { 
+        type: 'linear',  // Toggle to 'logarithmic' via checkbox
+        title: { text: 'Event Count' }
+      }
+    }
+  }
+});
+```
+
+<Info>
+  **Performance:** Chart updates use a 300ms animation duration with debounced filter changes (1200ms) to prevent server saturation when adjusting time ranges.
+</Info>
+
+## Adaptive Time Bucketing
+
+The histogram automatically selects the optimal time granularity based on the investigation timespan:
+
+```python
+# From engine/analyzer.py:158-172
+duration = (view_max - view_min).total_seconds()
+
+if duration <= 0:
+    bucket = "1h"
+elif duration < 3 * 3600:        # < 3 hours
+    bucket = "5m"                 # 5-minute buckets
+elif duration < 6 * 3600:        # < 6 hours
+    bucket = "15m"                # 15-minute buckets
+elif duration < 12 * 3600:       # < 12 hours
+    bucket = "30m"                # 30-minute buckets
+elif duration < 48 * 3600:       # < 2 days
+    bucket = "1h"                 # 1-hour buckets
+elif duration < 7 * 86400:       # < 7 days
+    bucket = "6h"                 # 6-hour buckets
+else:
+    bucket = "1d"                 # Daily buckets
+```
+
+<Steps>
+  <Step title="Parse Timestamps">
+    Multiple datetime formats are attempted using Polars' `coalesce()` with strict=False:
+    
+    ```python
+    # From engine/analyzer.py:58-88
+    parse_exprs = []
+    for col in time_columns:
+        c_str = pl.col(col).cast(pl.Utf8)
+        parse_exprs.append(
+            pl.coalesce([
+                c_str.str.to_datetime("%Y-%m-%dT%H:%M:%S%.f", strict=False),
+                c_str.str.to_datetime("%Y-%m-%d %H:%M:%S", strict=False),
+                c_str.str.to_datetime("%m/%d/%Y %H:%M:%S", strict=False),
+                # Unix timestamp (seconds)
+                pl.when(c_int > 0).then(
+                    pl.from_epoch(c_int * 1000, time_unit="ms")
+                ),
+                # Unix timestamp (milliseconds)
+                pl.when(c_int >= 30000000000).then(
+                    pl.from_epoch(c_int, time_unit="ms")
+                ),
+            ])
+        )
+    ```
+  </Step>
+  
+  <Step title="Apply Bucketing">
+    Polars' `dt.truncate()` groups events into time windows:
+    
+    ```python
+    bucketed_df = q_filtered.with_columns(
+        pl.col("ts").dt.truncate(bucket).alias("_bucket")
+    ).group_by("_bucket").agg(
+        pl.len().cast(pl.Int32).alias("cnt")
+    ).sort("_bucket").collect(streaming=True)
+    
+    labels = bucketed_df["_bucket"].dt.to_string("%Y-%m-%d %H:%M").to_list()
+    y_vals = bucketed_df["cnt"].to_list()
+    ```
+  </Step>
+  
+  <Step title="Return Chart Data">
+    Response includes labels, datasets, and computed statistics:
+    
+    ```python
+    return {
+        "labels": labels,
+        "datasets": [{"label": "Events", "data": y_vals}],
+        "stats": {
+            "total_events": view_total,
+            "start_time": view_min.isoformat(),
+            "end_time": view_max.isoformat(),
+            "eps": round(view_total / duration, 2)  # Events per second
+        }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Time Filtering
+
+Users can filter the timeline using start/end time controls:
+
+```python
+# From engine/analyzer.py:115-123
+q_filtered = q_parsed
+if start_time and start_time != "null":
+    q_filtered = q_filtered.filter(
+        pl.col("ts") >= pl.lit(start_time).str.to_datetime(strict=False)
+    )
+if end_time and end_time != "null":
+    q_filtered = q_filtered.filter(
+        pl.col("ts") <= pl.lit(end_time).str.to_datetime(strict=False)
+    )
+```
+
+<Note>
+  **Filter Composition:** Time filters compose with global search, column filters, and row selection. All filters are applied in a single Polars LazyFrame query for optimal performance.
+</Note>
+
+## Anomaly Detection
+
+The histogram includes **statistical anomaly detection** with peak and trend analysis:
+
+```python
+# From engine/analyzer.py:184-193
+if len(y_vals) > 1:
+    mid = max(1, len(y_vals) // 2)
+    avg_first = sum(y_vals[:mid]) / mid
+    avg_second = sum(y_vals[mid:]) / max(1, len(y_vals) - mid)
+    
+    if avg_second > avg_first * 1.2:
+        interpretation = "Alza (Posible Ataque/Spike)"  # Rising trend
+    elif avg_second < avg_first * 0.8:
+        interpretation = "Baja (Mitigación/Inactividad)"  # Falling trend
+    else:
+        interpretation = "Estable"  # Stable baseline
+```
+
+### Visual Indicators
+
+<CardGroup cols={3}>
+  <Card title="Peak Detection" icon="triangle-exclamation">
+    Bars exceeding 2-3 standard deviations above mean are highlighted in **red** (Critical risk)
+  </Card>
+  <Card title="Trend Line" icon="chart-line">
+    Dotted gold line shows the moving average to identify baseline vs. spikes
+  </Card>
+  <Card title="Color Mapping" icon="palette">
+    - **Red:** Critical events (Sigma/YARA hits, EventID 4625)
+    - **Orange:** High severity
+    - **Blue:** Normal baseline activity
+  </Card>
+</CardGroup>
+
+## Logarithmic Scale Toggle
+
+For datasets with extreme variance (1 event vs. 55,000 events), enable logarithmic scale:
+
+```javascript
+// Frontend toggle
+document.getElementById('log-scale-checkbox').addEventListener('change', (e) => {
+  timelineChart.options.scales.y.type = e.target.checked ? 'logarithmic' : 'linear';
+  timelineChart.update();
+});
+```
+
+<Warning>
+  **When to Use Log Scale:** Enable when peak/mean ratio > 10x. For example, if baseline is 50 events/hour but a spike shows 5,000 events/hour, log scale prevents visual saturation.
+</Warning>
+
+## Histogram Export Options
+
+<Tabs>
+  <Tab title="PNG Export">
+    Capture high-definition canvas screenshot for PowerPoint/Word reports:
+    
+    ```javascript
+    function exportChartPNG() {
+      const canvas = document.getElementById('timeline-chart');
+      const link = document.createElement('a');
+      link.download = 'chronos_timeline.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Excel Export">
+    Export raw histogram data (X=Time, Y=Count) as XLSX:
+    
+    ```python
+    # Backend generates XLSX with xlsxwriter
+    import xlsxwriter
+    workbook = xlsxwriter.Workbook('histogram_data.xlsx')
+    worksheet = workbook.add_worksheet()
+    
+    worksheet.write_row(0, 0, ['Timestamp', 'Event Count'])
+    for i, (label, count) in enumerate(zip(labels, y_vals)):
+        worksheet.write_string(i+1, 0, label)
+        worksheet.write_number(i+1, 1, count)
+    ```
+    
+    Perfect for feeding into PowerBI or additional OSINT analysis tools.
+  </Tab>
+</Tabs>
+
+## Events Per Second (EPS) Calculation
+
+Real-time throughput metrics are computed from the filtered view:
+
+```python
+# From engine/analyzer.py:238-246
+"stats": {
+    "total_events": view_total,
+    "file_total": file_total,  # Unfiltered count
+    "start_time": view_min.isoformat(),
+    "end_time": view_max.isoformat(),
+    "eps": round(view_total / duration, 2) if duration > 0 else 0
+}
+```
+
+<Info>
+  **Forensic Insight:** EPS helps identify **beaconing** (steady low EPS like 0.1-1.0) vs. **brute force** (spikes of 100+ EPS). Compare with baseline normal activity for your environment.
+</Info>
+
+## Time Column Hierarchy
+
+Chronos searches for time columns in priority order:
+
+```python
+# From engine/forensic.py - TIME_HIERARCHY constant
+TIME_HIERARCHY = [
+    "Time", "Timestamp", "EventTime", "TimeCreated", 
+    "UtcTime", "CreationUtcTime", "_time", "date",
+    "Date", "DateTime", "EventReceivedTime", "Timezone"
+]
+
+def get_primary_time_column(columns: list) -> str:
+    """Case-insensitive search for primary time column."""
+    for candidate in TIME_HIERARCHY:
+        for col in columns:
+            if col.lower() == candidate.lower():
+                return col
+    return None
+```
+
+<Note>
+  **Fallback Behavior:** If no time column is found, the histogram is replaced with horizontal bar charts showing Top Users, Top Processes, and Top Paths (similar to GoAccess/ELK for non-temporal artifacts).
+</Note>
+
+## Distribution Analysis
+
+Beyond the timeline, Chronos computes tactic and severity distributions:
+
+```python
+# From engine/analyzer.py:198-217
+distributions = {}
+
+if tactic_col:
+    tactic_counts = q_filtered.group_by(tactic_col).agg(
+        pl.len().alias("count")
+    ).collect(streaming=True)
+    distributions["tactics"] = dict(zip(
+        tactic_counts[tactic_col].cast(pl.Utf8).to_list(),
+        tactic_counts["count"].to_list()
+    ))
+
+if level_col:
+    sev_counts = q_filtered.group_by(level_col).agg(
+        pl.len().alias("count")
+    ).collect(streaming=True)
+    distributions["severity"] = dict(zip(
+        sev_counts[level_col].cast(pl.Utf8).fill_null("N/A").to_list(),
+        sev_counts["count"].to_list()
+    ))
+```
+
+These distributions power the **TTP Summary Strip** shown below the dashboard:
+
+```html
+<!-- From static/js/main.js - TTP Summary Strip -->
+<div id="ttp-summary-strip">
+  <span class="ttp-badge critical">CRITICAL: 12</span>
+  <span class="ttp-badge high">HIGH: 47</span>
+  <span class="ttp-tech">T1003</span>
+  <span class="ttp-tech">T1059</span>
+  <span class="ttp-tech">T1078</span>
+</div>
+```
+
+## Performance Metrics
+
+| Dataset Size | Histogram Generation | Filter + Redraw | Memory |
+|--------------|---------------------|-----------------|--------|
+| 10K events | < 100ms | < 50ms | ~20MB |
+| 100K events | < 500ms | < 200ms | ~50MB |
+| 1M events | 1-2 seconds | < 500ms | ~100MB |
+| 10M events | 5-10 seconds | 1-2 seconds | ~200MB |
+
+<Info>
+  **Streaming Aggregation:** All aggregations use Polars' `collect(streaming=True)` to process data in chunks without loading the entire dataset into memory.
+</Info>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Threat Detection" icon="shield-exclamation" href="/features/threat-detection">
+    Apply Sigma and YARA rules to timeline events
+  </Card>
+  <Card title="Exports" icon="download" href="/features/exports">
+    Export timeline data and forensic reports
+  </Card>
+</CardGroup>

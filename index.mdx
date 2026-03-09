@@ -1,97 +1,115 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Welcome to Chronos-DFIR"
+description: "A forensic timeline analysis tool for DFIR professionals that ingests multi-format evidence and provides interactive threat detection."
 ---
 
-## Setting up
+## Overview
 
-Get your documentation site up and running in minutes.
+Chronos-DFIR is a comprehensive forensic timeline explorer and Digital Forensics & Incident Response (DFIR) analysis platform. It ingests multi-format evidence from various sources, applies advanced threat detection using Sigma and YARA rules, and renders interactive timelines with risk-scored intelligence.
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
+<CardGroup cols={2}>
   <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
+    title="Quick Start"
+    icon="rocket"
+    href="/quickstart"
   >
-    Edit your docs locally and preview them in real time.
+    Get up and running with Chronos-DFIR in minutes
   </Card>
   <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
+    title="Installation"
+    icon="download"
+    href="/installation"
   >
-    Customize the design and colors of your site to match your brand.
-  </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+    Install and configure Chronos-DFIR for your environment
   </Card>
   <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
+    title="Evidence Ingestion"
+    icon="file-import"
+    href="/guides/evidence-ingestion"
   >
-    Auto-generate API documentation from OpenAPI specifications.
-  </Card>
-</Columns>
-
-## Create beautiful pages
-
-Everything you need to create world-class documentation.
-
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+    Learn how to ingest forensic artifacts and logs
   </Card>
   <Card
-    title="Code samples"
+    title="API Reference"
     icon="code"
-    href="/essentials/code"
+    href="/api/overview"
   >
-    Add sample code to demonstrate how to use your product.
+    Explore the complete API documentation
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+</CardGroup>
 
-## Need inspiration?
+## Key Features
+
+<CardGroup cols={2}>
+  <Card
+    title="Multi-Format Ingestion"
+    icon="database"
+    href="/features/file-ingestion"
+  >
+    Ingest EVTX, MFT, CSV, XLSX, JSON, Plist, and more with streaming support for 6GB+ files
+  </Card>
+  <Card
+    title="Timeline Analysis"
+    icon="chart-line"
+    href="/features/timeline-analysis"
+  >
+    Interactive timeline visualization with intelligent time bucketing and anomaly detection
+  </Card>
+  <Card
+    title="Threat Detection"
+    icon="shield-halved"
+    href="/features/threat-detection"
+  >
+    Real-time detection with 86+ Sigma rules and 7 YARA rule sets covering MITRE ATT&CK
+  </Card>
+  <Card
+    title="Advanced Exports"
+    icon="file-export"
+    href="/features/exports"
+  >
+    Export to PDF, HTML, CSV, XLSX, and JSON with forensic integrity preservation
+  </Card>
+</CardGroup>
+
+## Detection Capabilities
+
+<CardGroup cols={3}>
+  <Card
+    title="Sigma Rules"
+    icon="filter"
+    href="/detection/sigma-rules"
+  >
+    86+ detection rules covering all MITRE ATT&CK tactics
+  </Card>
+  <Card
+    title="YARA Rules"
+    icon="magnifying-glass-chart"
+    href="/detection/yara-rules"
+  >
+    7 rule sets for ransomware, C2, and malware detection
+  </Card>
+  <Card
+    title="MITRE ATT&CK"
+    icon="network-wired"
+    href="/detection/mitre-attck"
+  >
+    Automatic TTP mapping and kill chain visualization
+  </Card>
+</CardGroup>
+
+## Architecture
+
+Built with a modern, high-performance stack:
+
+- **Backend**: Python 3.12+ with FastAPI and uvicorn
+- **Data Engine**: Polars vectorized processing with PyArrow
+- **Frontend**: Tabulator.js with virtual DOM and Chart.js visualization
+- **Detection**: Sigma YAML and YARA rules with offline-first processing
 
 <Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
+  title="Learn More About Architecture"
+  icon="diagram-project"
+  href="/advanced/architecture"
 >
-  Browse our showcase of exceptional documentation sites.
+  Dive deep into the technical architecture and design decisions
 </Card>

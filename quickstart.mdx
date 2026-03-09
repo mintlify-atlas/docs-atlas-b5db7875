@@ -1,80 +1,418 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start Guide
+description: Get started with Chronos-DFIR in 5 minutes - from launch to your first forensic timeline
 ---
 
-## Get started in three steps
+# Quick Start Guide
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+This guide will walk you through launching Chronos-DFIR, uploading your first forensic artifact, and generating an interactive timeline with threat detections.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+Before starting, ensure you've completed the [installation steps](/installation) and have Python 3.12+ with all dependencies installed.
 </Note>
+
+## Launch the Application
+
+<Steps>
+  <Step title="Start the Server">
+    Open a terminal in the Chronos-DFIR directory and launch the Uvicorn server:
+    
+    ```bash
+    uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+    ```
+    
+    You should see output similar to:
+    
+    ```
+    INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+    INFO:     Started reloader process [12345] using StatReload
+    INFO:     Started server process [12346]
+    INFO:     Waiting for application startup.
+    INFO:     Application startup complete.
+    ```
+    
+    <Info>
+    The `--reload` flag enables auto-restart when code changes are detected. Remove it in production.
+    </Info>
+  </Step>
+  
+  <Step title="Access the Web Interface">
+    Open your browser and navigate to:
+    
+    ```
+    http://localhost:8000
+    ```
+    
+    You'll see the Chronos-DFIR dark-mode interface with the drag-and-drop upload area in the sidebar.
+  </Step>
+  
+  <Step title="Verify System Status">
+    The application performs startup checks:
+    
+    - Clears temporary upload/output directories
+    - Initializes the case database (DuckDB)
+    - Loads 86+ Sigma detection rules
+    - Compiles YARA rulesets
+    
+    Check the terminal output for:
+    
+    ```
+    INFO:     Sigma Engine: loaded 86 rules from rules/sigma
+    INFO:     Asset version hash: a3f21c89
+    INFO:     Startup cleanup complete
+    ```
+  </Step>
+</Steps>
+
+## Upload Your First Artifact
+
+<Steps>
+  <Step title="Select an Artifact Type">
+    Chronos-DFIR supports multiple forensic formats:
+    
+    <CardGroup cols={2}>
+      <Card title="Windows Event Logs" icon="windows">
+        `.evtx` files from `System32/winevt/Logs/`
+      </Card>
+      
+      <Card title="NTFS Master File Table" icon="hard-drive">
+        `.mft` raw exports or parsed CSV
+      </Card>
+      
+      <Card title="macOS Property Lists" icon="apple">
+        `.plist` files from LaunchAgents/Daemons
+      </Card>
+      
+      <Card title="Generic Reports" icon="file-csv">
+        CSV, JSON, Excel, SQLite exports from tools like Plaso, KAPE, or Volatility
+      </Card>
+    </CardGroup>
+    
+    For this example, we'll use a Windows Security Event Log (`Security.evtx`).
+  </Step>
+  
+  <Step title="Drag and Drop the File">
+    Click **Select File** in the sidebar or drag your `.evtx` file directly into the drop zone.
+    
+    The system will:
+    
+    1. **Stream the upload** (handles 6GB+ files without memory issues)
+    2. **Calculate SHA256 hash** for chain of custody
+    3. **Parse the format** (using `evtx` library for binary parsing)
+    4. **Normalize columns** to standard schema (Time, EventID, Level, Provider, etc.)
+    5. **Apply Sigma rules** to detect threats during parsing
+    6. **Run YARA scans** on extracted text content
+    
+    <Info>
+    Large files (100K+ events) may take 30-60 seconds to process. Progress is shown in the upload modal.
+    </Info>
+  </Step>
+  
+  <Step title="Review Upload Summary">
+    Once processing completes, you'll see a summary:
+    
+    ```json
+    {
+      "status": "success",
+      "processed_records": 38464,
+      "file_category": "generic",
+      "chain_of_custody": {
+        "sha256": "a3f21c89...",
+        "file_size_bytes": 52428800,
+        "original_filename": "Security.evtx"
+      }
+    }
+    ```
+    
+    Click **Load View** to open the timeline grid.
+  </Step>
+</Steps>
+
+## Explore the Timeline
+
+<Steps>
+  <Step title="Navigate the Event Grid">
+    The main grid displays events in reverse-chronological order (newest first):
+    
+    | Column | Description | Source |
+    |--------|-------------|--------|
+    | **No.** | Display row number (cosmetic) | Auto-generated |
+    | **Time** | Event timestamp (ISO 8601 format) | EventTime / TimeCreated |
+    | **EventID** | Windows Event ID | System/EventID |
+    | **Level** | Severity (Information, Warning, Error, Critical) | System/Level |
+    | **Provider** | Event source (e.g., Microsoft-Windows-Security-Auditing) | System/Provider/@Name |
+    | **Computer** | Hostname | System/Computer |
+    | **User** | Account name | EventData/TargetUserName |
+    | **Process** | Executable name | EventData/ProcessName |
+    
+    <Note>
+    Chronos uses Tabulator.js virtual DOM rendering to handle millions of rows. Only visible rows are rendered in the browser.
+    </Note>
+  </Step>
+  
+  <Step title="View the Histogram">
+    Below the grid, the interactive Chart.js histogram shows event distribution over time:
+    
+    - **X-axis**: Time buckets (auto-scaled: seconds, minutes, hours, or days based on data span)
+    - **Y-axis**: Event count per bucket
+    - **Color coding**:
+      - 🔴 **Red**: Critical/High severity events or Sigma rule matches
+      - 🟡 **Yellow**: Above-average activity (anomaly detection)
+      - 🔵 **Blue**: Normal baseline activity
+    
+    **Histogram Features:**
+    
+    - Hover over bars to see exact counts and time ranges
+    - Click **Log Scale** to view sparse events alongside high-volume activity
+    - Export chart as PNG (screenshot) or Excel (raw data)
+    
+    <Info>
+    The histogram automatically recalculates when you apply filters to the grid.
+    </Info>
+  </Step>
+  
+  <Step title="Filter and Search">
+    Use the toolbar to narrow down events:
+    
+    **Global Search:**
+    
+    ```bash
+    # Search for PowerShell activity
+    powershell.exe
+    
+    # Search for specific user
+    DOMAIN\Administrator
+    
+    # Search for IP addresses
+    192.168.1.100
+    ```
+    
+    **Time Range Filter:**
+    
+    Click the **Start Time** and **End Time** pickers to select a window, then click **Filter** to apply.
+    
+    **Column Filters:**
+    
+    Click any column header to filter by specific values:
+    
+    - EventID = 4624 (Successful Logon)
+    - Level = Error
+    - Provider = Microsoft-Windows-Sysmon
+    
+    **Hide Empty Columns:**
+    
+    Click the **Hide Empty** toggle to automatically hide columns with 100% null values in the current filtered view.
+  </Step>
+  
+  <Step title="Review Threat Detections">
+    Click **Context Report** (brain icon) to open the Forensic Insight modal showing:
+    
+    **Dashboard Cards:**
+    
+    - **Total Events**: Raw event count
+    - **Risk Level**: Low / Medium / High / Critical (based on Sigma hits and anomalies)
+    - **EPS**: Events per second (temporal density metric)
+    - **Top Tactic**: Most common MITRE ATT&CK tactic or Event ID
+    - **Primary Identity**: Most active user or IP address
+    
+    **Sigma Rule Detections:**
+    
+    Expandable sections for each triggered rule:
+    
+    ```yaml
+    Rule: PowerShell Execution Policy Bypass
+    Level: High
+    MITRE: T1059.001 (Command and Scripting Interpreter: PowerShell)
+    Matched Rows: 12
+    Evidence: [Sample rows with CommandLine, User, Process columns]
+    ```
+    
+    Click **View all in Grid** to filter the main timeline to only matching events.
+    
+    **YARA Matches:**
+    
+    Any triggered YARA signatures (ransomware, C2 frameworks, etc.):
+    
+    ```yaml
+    Rule: LockBit_Ransomware_Indicators
+    Namespace: ransomware
+    Strings Matched: 3
+    Meta: {family: "LockBit 3.0", severity: "critical"}
+    ```
+    
+    <Warning>
+    YARA scans only process the first 5MB of ingested data for performance. For exhaustive binary analysis, use dedicated YARA tools.
+    </Warning>
+  </Step>
+</Steps>
+
+## Export Results
+
+<Steps>
+  <Step title="Choose Export Format">
+    Click the **Export** dropdown in the toolbar:
+    
+    <CardGroup cols={2}>
+      <Card title="CSV Format" icon="file-csv">
+        UTF-8 encoded with BOM for Excel compatibility. Hex values wrapped in formulas to prevent conversion.
+      </Card>
+      
+      <Card title="Excel Spreadsheet" icon="file-excel">
+        XLSX with text formatting for all columns. Preserves hex, GUIDs, and hashes.
+      </Card>
+      
+      <Card title="JSON Structure" icon="code">
+        Array of event objects. Compatible with SOAR platforms (Splunk, Cortex XSOAR).
+      </Card>
+      
+      <Card title="Context (AI-Ready)" icon="brain">
+        Forensic summary JSON optimized for LLM ingestion. Includes Sigma hits, YARA, IOCs, risk scoring.
+      </Card>
+    </CardGroup>
+    
+    <Info>
+    All exports respect active filters (search, time range, column filters, row selection).
+    </Info>
+  </Step>
+  
+  <Step title="Generate HTML Report">
+    Click **Graphical Report** to generate a standalone HTML file containing:
+    
+    - Dashboard summary cards
+    - Embedded histogram (Chart.js with Base64-encoded data)
+    - All Sigma detections with evidence tables
+    - MITRE kill chain mapping
+    - Cross-source correlations
+    - Session profiles
+    - Risk justification log
+    
+    The report is self-contained (no external dependencies) and can be:
+    
+    - Emailed to stakeholders
+    - Printed to PDF via browser (Ctrl+P / Cmd+P)
+    - Opened offline for presentations
+    
+    <Note>
+    The HTML report uses print-friendly CSS with forced colors for readability on paper.
+    </Note>
+  </Step>
+  
+  <Step title="Export for AI Analysis">
+    For large datasets that exceed LLM token limits:
+    
+    1. Select **Zip (Split Artifacts)** from the Export dropdown
+    2. Choose split size: 50MB or 99MB chunks
+    3. Select format: CSV or JSON
+    4. Click **Download**
+    
+    The system will:
+    
+    - Split filtered data into N files within the size limit
+    - Create a ZIP archive with sequential filenames
+    - Include a manifest.json with metadata
+    
+    Each chunk can be uploaded individually to ChatGPT, Claude, or Gemini for analysis.
+  </Step>
+</Steps>
+
+## Common Workflows
+
+### Workflow 1: Ransomware Timeline Reconstruction
+
+```bash
+# 1. Upload Security.evtx + System.evtx from infected host
+# 2. Sigma rules auto-detect:
+#    - T1490: Inhibit System Recovery (vssadmin delete shadows)
+#    - T1486: Data Encrypted for Impact (.lockbit extension)
+#    - T1055: Process Injection (CreateRemoteThread API)
+# 3. Filter timeline to EventID 4688 (Process Creation)
+# 4. Sort by Time ascending to see attack progression
+# 5. Export filtered CSV for timeline report
+```
+
+### Workflow 2: Lateral Movement Detection
+
+```bash
+# 1. Upload Sysmon.evtx (EventID 3: Network Connections)
+# 2. Filter by DestinationPort = 445 (SMB)
+# 3. Sigma rules flag:
+#    - T1021.002: SMB/Windows Admin Shares
+#    - T1570: Lateral Tool Transfer
+# 4. Cross-reference User column with privileged accounts
+# 5. Export Context JSON for AI threat briefing
+```
+
+### Workflow 3: Web Shell Hunting
+
+```bash
+# 1. Upload IIS access logs (CSV format)
+# 2. Sigma rules detect:
+#    - SQL Injection patterns in URL parameters
+#    - Webshell POST requests to .aspx files
+#    - Command execution via eval() functions
+# 3. Filter by HTTP Status = 200 (successful requests)
+# 4. Export matched rows as Excel for investigation
+```
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+F` / `Cmd+F` | Focus global search box |
+| `Ctrl+Shift+R` / `Cmd+Shift+R` | Hard reset (clear cache and filters) |
+| `Ctrl+E` / `Cmd+E` | Open export menu |
+| `Ctrl+P` / `Cmd+P` | Print current view or report |
+| `Esc` | Close modal dialogs |
+
+## Troubleshooting
+
+<Warning>
+If the interface shows stale data after updates, perform a hard refresh: `Ctrl+Shift+R` (Windows/Linux) or `Cmd+Shift+R` (macOS).
+</Warning>
+
+**Issue: Upload fails with "Memory Error"**
+
+Solution: The file may be too large. Try:
+
+```bash
+# Split large EVTX files with evtx_dump
+evtx_dump Security.evtx --no-indent -o security.json
+split -l 100000 security.json chunk_
+# Upload chunks individually
+```
+
+**Issue: Sigma rules not triggering**
+
+Check that field names match rule expectations:
+
+```bash
+# Rules expect standardized column names
+# Use "Manage Cols" to rename:
+CommandLine → Command_Line  # if rule uses underscores
+```
+
+**Issue: Chart not updating after filters**
+
+Clear the browser cache:
+
+```bash
+# Chrome/Edge: Shift+F5
+# Firefox: Ctrl+Shift+R
+# Safari: Cmd+Option+R
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Advanced Features" icon="star" href="/advanced/architecture">
+    Learn about case management, multi-file correlation, and custom Sigma rules
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Integrate Chronos-DFIR into automated DFIR pipelines via REST API
+  </Card>
+</CardGroup>
+
+---
+
+**Need Help?** Check the [troubleshooting guide](/troubleshooting) or review the [architecture documentation](/architecture) for deep-dive technical details.

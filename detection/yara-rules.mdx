@@ -1,0 +1,584 @@
+---
+title: 'YARA Detection Rules'
+description: 'Binary pattern matching for malware, ransomware, and C2 framework detection with 7 specialized rule sets'
+icon: 'dna'
+---
+
+## Overview
+
+Chronos-DFIR includes **7 YARA rule sets** totaling **30+ individual rules** for binary pattern matching against malware families, ransomware, C2 frameworks, and living-off-the-land binaries (LOLBins). YARA rules complement Sigma detection by identifying **file-level artifacts** (executables, DLLs, scripts) through string patterns, PE headers, and behavioral signatures.
+
+<Info>
+**YARA** (Yet Another Ridiculous Acronym) is a pattern-matching engine for identifying and classifying malware. Chronos-DFIR integrates YARA scanning as part of its forensic analysis pipeline.
+</Info>
+
+---
+
+## Rule Categories
+
+Chronos-DFIR organizes YARA rules into 6 threat categories:
+
+<CardGroup cols={2}>
+  <Card title="Ransomware" icon="lock">
+    **3 rule sets**: LockBit, QILIN/Agenda, Generic ransomware patterns
+    
+    Detects encryption malware, ransom notes, shadow copy deletion, and safe mode persistence.
+  </Card>
+
+  <Card title="C2 Frameworks" icon="satellite-dish">
+    **5 rules**: Cobalt Strike, Metasploit, Sliver, PowerShell reverse shells, DNS tunneling
+    
+    Identifies command-and-control implants and beaconing behavior.
+  </Card>
+
+  <Card title="Infostealers" icon="key">
+    **Generic patterns** for credential theft
+    
+    Browser credential dumps, keylogger artifacts, clipboard hijacking.
+  </Card>
+
+  <Card title="Living-Off-the-Land Binaries" icon="tools">
+    **LOLBin abuse detection**
+    
+    Malicious use of legitimate Windows utilities (certutil, bitsadmin, mshta).
+  </Card>
+
+  <Card title="Webshells" icon="globe">
+    **Generic webshell patterns**
+    
+    PHP, ASPX, JSP backdoor signatures.
+  </Card>
+
+  <Card title="macOS Persistence" icon="apple">
+    **macOS-specific threats**
+    
+    Launch agents, authorization plugins, XProtect evasion.
+  </Card>
+</CardGroup>
+
+---
+
+## Example YARA Rules
+
+### 1. QILIN (Agenda) Ransomware
+
+**File**: `rules/yara/ransomware/qilin_agenda.yar`
+
+QILIN is a cross-platform RaaS (Ransomware-as-a-Service) targeting Windows servers and VMware ESXi hypervisors. It uses ChaCha20 + RSA-2048 encryption and exfiltrates data via rclone.
+
+```yara
+rule QILIN_Ransomware_Strings_Windows {
+    meta:
+        description = "Detects QILIN/Agenda ransomware Windows variant"
+        author = "Chronos-DFIR / Ivan Huerta"
+        severity = "critical"
+        mitre = "T1486 – Data Encrypted for Impact"
+        tags = "ransomware, qilin, agenda, t1486"
+    
+    strings:
+        // Ransom note fragments
+        $note1 = "RECOVER-README" ascii nocase wide
+        $note2 = "qilinsupport" ascii nocase wide
+        $note3 = ".qilin" ascii wide
+        $note4 = ".agenda" ascii nocase wide
+
+        // VSS/Shadow deletion (pre-encryption)
+        $vss_del1 = "vssadmin Delete Shadows /All /Quiet" ascii nocase wide
+        $vss_del2 = "wbadmin DELETE SYSTEMSTATEBACKUP" ascii nocase wide
+        $bcdedit = "bcdedit /set {default} recoveryenabled No" ascii nocase
+
+        // ChaCha20 magic constant
+        $chacha20 = "expand 32-byte k" ascii
+
+        // QILIN config JSON structure
+        $config1 = "\"encrypt_mode\"" ascii
+        $config2 = "\"file_ext\"" ascii
+        $config3 = "\"note_name\"" ascii
+    
+    condition:
+        (any of ($note*)) or
+        ($chacha20 and any of ($config*)) or
+        (($vss_del1 or $vss_del2) and $bcdedit) or
+        2 of ($config*)
+}
+```
+
+<Accordion title="QILIN Attack Chain Breakdown" icon="crosshairs">
+1. **Initial Access**: Exploits public-facing apps or valid credentials
+2. **Pre-Encryption**: Deletes Volume Shadow Copies via `vssadmin` + `bcdedit`
+3. **Persistence**: Modifies registry for safe mode auto-start (bypasses AV/EDR)
+4. **Encryption**: ChaCha20 stream cipher + RSA-2048 for key exchange
+5. **Exfiltration**: Uses `rclone` to sync stolen data to Mega/Google Drive/S3
+6. **Ransom Note**: Drops `RECOVER-README.txt` with `.onion` link
+7. **ESXi Variant**: Targets hypervisors with `vim-cmd` to kill VMs before encryption
+</Accordion>
+
+### 2. QILIN ESXi Linux Variant
+
+```yara
+rule QILIN_Ransomware_ESXi_Linux {
+    meta:
+        description = "Detects QILIN Linux/ESXi variant targeting VMware"
+        severity = "critical"
+        mitre = "T1486, T1489"
+    
+    strings:
+        // ESXi-specific commands
+        $esxi_list = "vim-cmd vmsvc/getallvms" ascii
+        $esxi_kill = "vim-cmd vmsvc/power.off" ascii
+        $esxi_snap = "vim-cmd vmsvc/snapshot.removeall" ascii
+        $vmkfstools = "vmkfstools -U" ascii
+
+        // Go ELF binary markers (QILIN is Go-based)
+        $go_elf1 = "Go build ID:" ascii
+        $go_elf2 = "runtime/debug" ascii
+        $go_elf3 = "runtime.goexit" ascii
+
+        // Staging paths
+        $tmp_stage = "/tmp/.qilin" ascii
+        $ext_pattern = ".qilin" ascii
+    
+    condition:
+        (any of ($esxi_*)) or
+        (any of ($note_esxi*) and any of ($go_elf*)) or
+        ($vmkfstools and any of ($esxi_*))
+}
+```
+
+### 3. QILIN Rclone Exfiltration
+
+QILIN uses `rclone` to exfiltrate data before encryption:
+
+```yara
+rule QILIN_Ransomware_Rclone_Exfiltration {
+    meta:
+        description = "Detects QILIN data exfiltration via rclone"
+        mitre = "T1537 – Transfer Data to Cloud Account"
+    
+    strings:
+        $rclone = "rclone" ascii nocase wide
+        $rclone_copy = "rclone copy" ascii nocase wide
+        $rclone_sync = "rclone sync" ascii nocase wide
+        $rclone_config = "rclone.conf" ascii nocase wide
+        $rclone_remote1 = "mega:" ascii
+        $rclone_remote2 = "gdrive:" ascii
+        $rclone_remote3 = "s3:" ascii
+        $rclone_no_log = "--no-log" ascii nocase
+
+        $qilin_ref = "qilin" ascii nocase
+    
+    condition:
+        $rclone and
+        (any of ($rclone_copy, $rclone_sync, $rclone_config)) and
+        (any of ($rclone_remote*) or $rclone_no_log) or
+        ($rclone and $qilin_ref)
+}
+```
+
+---
+
+## C2 Framework Detection
+
+**File**: `rules/yara/c2_frameworks/c2_frameworks.yar`
+
+### Cobalt Strike Beacon
+
+```yara
+import "pe"
+
+rule C2_CobaltStrike_Beacon_Strings {
+    meta:
+        description = "Detects Cobalt Strike Beacon strings and config"
+        severity = "critical"
+        mitre = "T1071.001 – Application Layer Protocol: Web"
+    
+    strings:
+        $cs1 = "beacon.dll" ascii nocase
+        $cs2 = "ReflectiveLoader" ascii
+        $cs3 = "%02d/%02d/%02d %02d:%02d:%02d" ascii
+        $cs4 = "beacon" ascii nocase
+        $cs5 = "Cobalt Strike" ascii
+        $metadata = "metadata" ascii
+        $sleep_mask = "SleepMask" ascii
+        $pipe_name = "\\\\.\\pipe\\MSSE-" ascii
+        $named_pipe = "\\pipe\\" ascii
+    
+    condition:
+        pe.is_pe and (
+            2 of ($cs*) or
+            ($pipe_name or $sleep_mask or $metadata)
+        ) or
+        (not pe.is_pe and 3 of ($cs*))
+}
+```
+
+<Note>
+**Cobalt Strike** is a commercial penetration testing tool frequently abused by threat actors. Beacon DLLs use reflective loading and named pipes (`\\.\pipe\MSSE-*`) for inter-process communication.
+</Note>
+
+### Metasploit Meterpreter
+
+```yara
+rule C2_Metasploit_Meterpreter {
+    meta:
+        description = "Detects Metasploit Meterpreter payloads"
+        mitre = "T1059 – Command and Scripting Interpreter"
+    
+    strings:
+        $msf1 = "meterpreter" ascii nocase
+        $msf2 = "Metasploit" ascii nocase
+        $msf3 = "ReflectiveDll" ascii
+        $msf4 = "ReflectiveLoader" ascii
+        $msf5 = "msfvenom" ascii nocase
+        $msf7 = "reverse_tcp" ascii nocase
+        $msf8 = "reverse_https" ascii nocase
+        $msf9 = "EXITFUNC" ascii
+        $msf10 = "core_channel_open" ascii
+    
+    condition:
+        2 of them
+}
+```
+
+### Sliver C2 Implant
+
+```yara
+rule C2_Sliver_Implant {
+    meta:
+        description = "Detects Sliver C2 framework implant artifacts"
+        severity = "critical"
+        mitre = "T1071, T1573"
+    
+    strings:
+        $sliver1 = "SliverC2" ascii nocase
+        $sliver2 = "sliver" ascii nocase
+        $sliver3 = "github.com/bishopfox/sliver" ascii
+        $sliver4 = "implant_name" ascii
+        $sliver5 = "MTLS" ascii
+        $sliver6 = "ghostTunnel" ascii
+    
+    condition:
+        2 of them
+}
+```
+
+### PowerShell Reverse Shells
+
+```yara
+rule C2_Generic_Reverse_Shell_PowerShell {
+    meta:
+        description = "Detects PowerShell-based reverse shells"
+        mitre = "T1059.001 – PowerShell"
+    
+    strings:
+        $tcp_connect = "Net.Sockets.TcpClient" ascii wide
+        $stream_reader = "System.IO.StreamReader" ascii wide
+        $stream_writer = "System.IO.StreamWriter" ascii wide
+        $getstream = ".GetStream()" ascii wide
+        $invoke_exp = "IEX" ascii wide
+        $invoke_expr = "Invoke-Expression" ascii wide
+        $encoded = "-EncodedCommand" ascii nocase wide
+        $hidden = "-WindowStyle Hidden" ascii nocase wide
+        $bypass = "-ExecutionPolicy Bypass" ascii nocase wide
+    
+    condition:
+        ($tcp_connect and $getstream and ($stream_reader or $stream_writer)) or
+        ($invoke_exp or $invoke_expr) and ($encoded and ($hidden or $bypass))
+}
+```
+
+### DNS Tunneling
+
+```yara
+rule C2_Generic_DNS_Tunneling {
+    meta:
+        description = "Detects DNS tunneling for C2 covert channels"
+        mitre = "T1071.004 – DNS"
+    
+    strings:
+        $iodine = "iodine" ascii nocase
+        $dnscat = "dnscat" ascii nocase
+        $dns_query = "DnsQueryA" ascii wide
+        $txt_record = "DNS_TYPE_TEXT" ascii wide
+        $base32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567" ascii
+        $long_subdomain = /[a-zA-Z0-9]{40,}\.[a-zA-Z]{2,10}/ ascii
+    
+    condition:
+        $iodine or $dnscat or
+        ($dns_query and $txt_record and $base32) or
+        $long_subdomain
+}
+```
+
+---
+
+## Integration with Forensic Analysis
+
+### When YARA Scans Run
+
+YARA evaluation happens during the `/api/forensic_report` call:
+
+```python
+# In app.py forensic_report endpoint
+tasks = [
+    asyncio.to_thread(analyze_dataframe, df_parsed, sigma_hits, artifact_name),
+    asyncio.to_thread(sub_analyze_context, df_parsed),
+    asyncio.to_thread(sub_analyze_identity_and_procs, df_parsed),
+    asyncio.to_thread(sub_analyze_network, df_parsed),
+    asyncio.to_thread(sub_analyze_rare_paths, df_parsed),
+    asyncio.to_thread(sub_analyze_hunting, df_parsed),
+    asyncio.to_thread(sub_extract_tactics_from_sigma, sigma_hits),
+    asyncio.to_thread(run_yara_scan, artifact_path),  # ← Task 8/9
+    asyncio.to_thread(extract_correlation_chains, df_parsed, sigma_hits),
+]
+results = await asyncio.gather(*tasks)
+```
+
+<Info>
+YARA scanning runs **in parallel** with Sigma and forensic analysis as part of a 9-task `asyncio.gather()` for optimal performance.
+</Info>
+
+### YARA Output Format
+
+YARA results are included in the Forensic Context modal and exports:
+
+```json
+{
+  "yara_detections": [
+    {
+      "rule": "QILIN_Ransomware_Strings_Windows",
+      "severity": "critical",
+      "mitre": "T1486",
+      "matched_strings": [
+        "RECOVER-README",
+        "vssadmin Delete Shadows",
+        "expand 32-byte k"
+      ],
+      "file_path": "C:\\Windows\\Temp\\suspicious.exe",
+      "file_hash_sha256": "a3f2b1..."
+    }
+  ]
+}
+```
+
+### Forensic Context Modal Display
+
+In the UI, YARA hits appear as expandable sections:
+
+```html
+<div class="yara-section">
+  <h4>🦠 YARA Malware Detections (3 rules matched)</h4>
+  <ul>
+    <li>
+      <strong>CRITICAL</strong>: QILIN_Ransomware_Strings_Windows
+      <span class="mitre-badge">T1486</span>
+      <span class="file-path">C:\Temp\suspicious.exe</span>
+    </li>
+    <li>
+      <strong>HIGH</strong>: C2_CobaltStrike_Beacon_Strings
+      <span class="mitre-badge">T1071.001</span>
+      <span class="file-path">beacon.dll</span>
+    </li>
+  </ul>
+</div>
+```
+
+---
+
+## YARA Rule Syntax
+
+### Basic Structure
+
+```yara
+import "pe"  // Optional: PE file parsing module
+
+rule RuleName {
+    meta:
+        description = "Human-readable description"
+        author = "Analyst Name"
+        date = "YYYY-MM-DD"
+        severity = "critical | high | medium | low"
+        mitre = "TXXXX – Technique Name"
+        tags = "category, family, technique"
+        hash_refs = "MD5 or SHA256 samples"
+    
+    strings:
+        $string1 = "exact string" ascii wide
+        $string2 = "case insensitive" nocase
+        $hex1 = { 4D 5A 90 00 }  // PE header
+        $regex1 = /http:\/\/[a-z0-9]{10}\.com/ ascii
+    
+    condition:
+        $string1 or
+        ($string2 and $hex1) or
+        2 of ($regex*)
+}
+```
+
+### String Modifiers
+
+| Modifier | Description | Example |
+|----------|-------------|----------|
+| `ascii` | ASCII encoding | `"mimikatz" ascii` |
+| `wide` | UTF-16LE (Windows Unicode) | `"RECOVER-README" wide` |
+| `nocase` | Case-insensitive | `"powershell" nocase` |
+| `fullword` | Word boundaries | `"net" fullword` (won't match "network") |
+| `xor` | XOR-encoded | `"secret" xor` |
+| `base64` | Base64-encoded | `"cmd.exe" base64` |
+
+### Condition Operators
+
+```yara
+// Boolean logic
+condition: $a and $b
+condition: $a or $b
+condition: not $a
+
+// String counts
+condition: #a > 5          // String $a appears 5+ times
+condition: 2 of ($str*)    // At least 2 strings matching pattern
+condition: all of them     // All strings must be present
+
+// File size
+condition: filesize < 1MB
+
+// PE module
+condition: pe.is_pe and pe.number_of_sections > 5
+```
+
+---
+
+## Creating Custom YARA Rules
+
+### Step 1: Identify Unique Strings
+
+Extract distinctive strings from malware samples:
+
+```bash
+# Extract ASCII strings
+strings -a suspicious.exe > strings.txt
+
+# Extract wide strings (Unicode)
+strings -e l suspicious.exe > wide_strings.txt
+
+# Look for patterns like:
+# - Ransom notes
+# - C2 URLs
+# - Mutex names
+# - PDB paths
+# - Error messages
+```
+
+### Step 2: Write Rule
+
+```yara
+rule MyMalware_Variant {
+    meta:
+        description = "Detects MyMalware family"
+        author = "Your Name"
+        date = "2026-03-09"
+        severity = "high"
+    
+    strings:
+        $ransom_note = "YOUR FILES HAVE BEEN ENCRYPTED" ascii wide
+        $mutex = "Global\\MyMalwareMutex" ascii wide
+        $c2_domain = "badguy.onion" ascii
+        $pdb_path = "C:\\Projects\\MyMalware\\Release\\" ascii
+    
+    condition:
+        2 of them
+}
+```
+
+### Step 3: Test Rule
+
+```bash
+# Test against sample
+yara my_rule.yar suspicious.exe
+
+# Scan directory
+yara -r my_rule.yar /path/to/samples/
+
+# Add to Chronos
+cp my_rule.yar ~/workspace/source/rules/yara/custom/
+```
+
+---
+
+## Rule Maintenance Best Practices
+
+<AccordionGroup>
+  <Accordion title="Minimize False Positives" icon="filter">
+    - Use multiple unique strings (condition: `2 of them` or `3 of them`)
+    - Avoid generic strings like "error", "temp", "http"
+    - Combine string matches with file size or PE section checks
+    - Test against clean Windows system files before deployment
+  </Accordion>
+
+  <Accordion title="Performance Optimization" icon="gauge">
+    - Place most unique strings first
+    - Use `fullword` to reduce false matches
+    - Avoid overly broad regex patterns
+    - Limit `$string*` wildcards to specific prefixes
+  </Accordion>
+
+  <Accordion title="Versioning and Attribution" icon="code-branch">
+    - Always include `author`, `date`, `severity` in meta
+    - Reference MITRE ATT&CK technique IDs
+    - Link to threat intel reports in `references`
+    - Include sample hashes in `hash_refs` for validation
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## YARA vs Sigma: When to Use Each
+
+| Use Case | YARA | Sigma |
+|----------|------|-------|
+| **File artifacts** (executables, DLLs, scripts) | ✅ Best | ❌ Not applicable |
+| **Event logs** (EVTX, Sysmon, auditd) | ❌ Not applicable | ✅ Best |
+| **Memory dumps** | ✅ Best | ❌ Not applicable |
+| **Network packet captures** | ✅ Good | ❌ Not applicable |
+| **Registry hives** | ⚠️ Limited | ✅ Good (via Sigma) |
+| **Command-line behavior** | ❌ String-only | ✅ Best (logic + context) |
+| **Binary patterns** (encryption constants, shellcode) | ✅ Best | ❌ Not applicable |
+| **Behavioral logic** (failed logins > 10) | ❌ No logic | ✅ Best |
+
+<Note>
+**Recommendation**: Use YARA for **"what it is"** (file identification) and Sigma for **"what it does"** (behavioral detection).
+</Note>
+
+---
+
+## Offline Detection Guarantee
+
+All YARA rules in Chronos-DFIR are **100% local**:
+
+- No external API calls
+- No internet connectivity required
+- Rules stored in `rules/yara/` directory
+- Scans execute entirely in-memory or against local file paths
+
+---
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Sigma Rules" icon="shield-check" href="/detection/sigma-rules">
+    Event log detection with 86+ YAML rules
+  </Card>
+  <Card title="MITRE ATT&CK" icon="crosshairs" href="/detection/mitre-attck">
+    TTP mapping and kill chain analysis
+  </Card>
+</CardGroup>
+
+---
+
+## External References
+
+- [YARA Official Documentation](https://yara.readthedocs.io/)
+- [YARA-Rules Community Repository](https://github.com/Yara-Rules/rules)
+- [Neo23x0 Signature Base](https://github.com/Neo23x0/signature-base)
+- [VX Underground YARA Collection](https://www.vx-underground.org/)
+- Engine Integration: `engine/yara_engine.py` (upcoming module)

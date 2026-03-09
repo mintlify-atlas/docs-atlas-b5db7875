@@ -1,0 +1,760 @@
+---
+title: Detection Rules
+description: Understand Sigma and YARA rule evaluation, customize detection logic, and create custom rules for your environment
+---
+
+## Overview
+
+Chronos-DFIR integrates **offline detection engines** that evaluate forensic data against Sigma and YARA rules during ingestion. All detection happens locally — no internet connection required.
+
+<Info>
+  **Current rule coverage**: 86+ Sigma rules (MITRE ATT&CK TA0001-TA0011 + OWASP Top 10) + 7 YARA rule files (ransomware, C2, infostealers, LOLBins, webshells, macOS persistence).
+</Info>
+
+## Sigma Rules
+
+### What is Sigma?
+
+**Sigma** is a generic signature format for SIEM systems, developed by Florian Roth and the SigmaHQ community. It allows analysts to write detection logic once and convert it to multiple query languages (Splunk, Elastic, QRadar, etc.).
+
+Chronos-DFIR implements a **native Sigma engine** (`engine/sigma_engine.py`) that compiles YAML rules directly to Polars expressions for evaluation against forensic DataFrames.
+
+### How Sigma Rules Work
+
+During evidence ingestion (README.md line 33):
+
+<Steps>
+  <Step title="Rule Loading">
+    **On startup**, Chronos loads all `.yml` and `.yaml` files from `rules/sigma/` directory tree.
+    
+    **Implementation** (`engine/sigma_engine.py` line 40):
+    ```python
+    def load_sigma_rules(rules_dir=None, force_reload=False):
+        base = rules_dir or "rules/sigma"
+        rules = []
+        for path in glob.glob(f"{base}/**/*.yml", recursive=True):
+            with open(path, 'r') as fh:
+                doc = yaml.safe_load(fh)
+                rules.append(doc)
+        return rules
+    ```
+    
+    **Result**: 86+ rules cached in-memory for fast evaluation
+  </Step>
+  
+  <Step title="Detection Compilation">
+    Each Sigma rule's `detection` block is compiled to Polars expressions.
+    
+    **Example rule**: `rules/sigma/mitre/ta0002_execution/T1059_001_powershell_encoded.yml`
+    ```yaml
+    detection:
+      powershell_process:
+        Image|endswith:
+          - '\\powershell.exe'
+          - '\\pwsh.exe'
+      encoded_param:
+        CommandLine|contains|any:
+          - ' -EncodedCommand '
+          - ' -Enc '
+          - ' -ec '
+      condition: powershell_process and encoded_param
+    ```
+    
+    **Compiled to Polars** (`engine/sigma_engine.py` line 139):
+    ```python
+    # powershell_process block
+    expr_img = pl.col("Image").cast(pl.Utf8)
+    cond1 = expr_img.str.ends_with("\\powershell.exe") | expr_img.str.ends_with("\\pwsh.exe")
+    
+    # encoded_param block
+    expr_cmd = pl.col("CommandLine").cast(pl.Utf8)
+    cond2 = expr_cmd.str.contains("-EncodedCommand") | expr_cmd.str.contains("-Enc")
+    
+    # condition: and
+    final_expr = cond1 & cond2
+    ```
+  </Step>
+  
+  <Step title="Row-by-Row Evaluation">
+    As each row is processed during ingestion, all Sigma expressions are evaluated.
+    
+    **Matching rows**:
+    - `Sigma_Tag` column populated with rule title
+    - `MITRE_Technique` column populated with TTPs from rule tags
+    - Row IDs stored in `matched_rows` list for evidence retrieval
+    
+    **Performance**: Vectorized Polars evaluation — ~10K events/second on Apple Silicon M4
+  </Step>
+  
+  <Step title="Evidence Enrichment">
+    For detected rules, Chronos extracts **sample evidence** (first 150 matching rows) with forensic context columns.
+    
+    **27 forensic context columns** automatically included (`engine/sigma_engine.py` line 283):
+    ```python
+    FORENSIC_CONTEXT_COLUMNS = [
+        "User", "TargetUserName", "SubjectUserName",
+        "Process", "Image", "ProcessName", "ParentImage",
+        "CommandLine", "ParentCommandLine",
+        "SourceIP", "DestinationIP", "IpAddress",
+        "Computer", "Workstation", "SourceWorkstation",
+        "SHA256", "MD5", "EventID", "Level"
+    ]
+    ```
+    
+    **Result**: Expandable evidence tables in Forensic Insight modal
+  </Step>
+</Steps>
+
+### Sigma Rule Structure
+
+Every Sigma rule follows this format:
+
+```yaml
+title: Human-readable detection name
+id: unique-uuid-for-rule
+status: stable | experimental | deprecated
+description: |
+  Multi-line explanation of what this detects,
+  why it matters, and what actions it indicates.
+references:
+  - https://attack.mitre.org/techniques/T1234/
+  - Link to blog posts, documentation, etc.
+author: Your Name / Organization
+date: 2024/03/08
+tags:
+  - attack.tactic_name
+  - attack.t1234
+  - attack.sub_technique
+logsource:
+  product: windows | linux | macos
+  service: security | sysmon | auth
+  category: process_creation | network_connection
+detection:
+  selection_block_name:
+    FieldName: value
+    OtherField|modifier: value_or_list
+  filter_block_name:
+    SafeField: legitimate_value
+  condition: selection_block_name and not filter_block_name
+falsepositives:
+  - List of known benign scenarios that may trigger this rule
+level: critical | high | medium | low | informational
+```
+
+### Supported Sigma Features
+
+<Accordion title="Field Modifiers (v1.2)">
+  **Implemented modifiers**:
+  
+  | Modifier | Description | Example |
+  |----------|-------------|-------|
+  | `contains` | Substring match | `CommandLine\|contains: "mimikatz"` |
+  | `contains\|any` | Match any value in list | `Image\|contains\|any: ["cmd.exe", "powershell.exe"]` |
+  | `contains\|all` | Match all values | `CommandLine\|contains\|all: ["-enc", "-nop"]` |
+  | `startswith` | Prefix match | `Image\|startswith: "C:\\\\Windows\\\\Temp"` |
+  | `endswith` | Suffix match | `Image\|endswith: ".exe"` |
+  | `re` | Regex match | `CommandLine\|re: "\\b(password\\|passwd)\\b"` |
+  
+  **Not yet implemented** (Roadmap):
+  - `base64offset`
+  - `cidr` (IP range matching)
+  - `windash` (normalize command-line dashes)
+</Accordion>
+
+<Accordion title="Boolean Conditions">
+  **Supported**:
+  - `condition: selection` (single block)
+  - `condition: selection1 and selection2` (AND logic)
+  - `condition: selection1 or selection2` (OR logic)
+  - `condition: selection and not filter` (negation)
+  - `condition: 1 of selection_*` (match any block starting with `selection_`)
+  - `condition: all of selection_*` (match all blocks)
+  
+  **Example** (lateral movement detection):
+  ```yaml
+  detection:
+    logon_event:
+      EventID: '4624'
+    network_logon:
+      LogonType: '3'
+    admin_account:
+      TargetUserName|endswith:
+        - 'admin'
+        - 'administrator'
+    safe_source:
+      SourceIP: '127.0.0.1'
+    condition: logon_event and network_logon and admin_account and not safe_source
+  ```
+</Accordion>
+
+<Accordion title="Temporal Correlation (Partial)">
+  **Roadmap feature** (not yet implemented):
+  
+  ```yaml
+  detection:
+    brute_force:
+      EventID: '4625'  # Failed logon
+    timeframe: 5m
+    condition: brute_force | count(TargetUserName) > 10
+  ```
+  
+  **Status**: `timeframe` and `count()` aggregation are deferred to v1.3.
+  
+  **Workaround**: Use post-processing with Polars aggregations:
+  ```python
+  df_failed_logons = df.filter(pl.col("EventID") == "4625")
+  brute_force = df_failed_logons.group_by(
+      [pl.col("Timestamp").dt.truncate("5m"), "TargetUserName"]
+  ).agg(pl.count()).filter(pl.col("count") > 10)
+  ```
+</Accordion>
+
+### Sigma Rule Directory Structure
+
+From `rules/README.md`:
+
+```
+rules/sigma/
+├── mitre/               # MITRE ATT&CK tactics
+│   ├── ta0001_initial_access/
+│   │   ├── T1078_anomalous_logon_patterns.yml
+│   │   └── T1190_exploit_public_app.yml
+│   ├── ta0002_execution/
+│   │   ├── T1047_wmi_execution.yml
+│   │   ├── T1059_001_powershell_encoded.yml
+│   │   └── T1059_004_macos_unified_log_suspicious_shell.yml
+│   ├── ta0003_persistence/
+│   ├── ta0004_privilege_escalation/
+│   ├── ta0005_defense_evasion/
+│   ├── ta0006_credential_access/
+│   ├── ta0007_discovery/
+│   ├── ta0009_collection/
+│   ├── ta0010_exfiltration/
+│   └── ta0011_command_and_control/
+├── artifacts/           # Forensic artifact detections
+│   ├── prefetch/
+│   ├── shimcache/
+│   ├── amcache/
+│   ├── userassist/
+│   ├── srum/
+│   ├── lnk_jumplist/
+│   ├── shellbags/
+│   ├── mru/
+│   └── recycle_bin/
+├── browser/             # Browser forensics
+│   ├── history_manipulation.yml
+│   ├── cookie_theft.yml
+│   └── cache_forensics.yml
+├── linux/               # Linux-specific detections
+│   ├── reverse_shells.yml
+│   ├── ssh_bruteforce.yml
+│   ├── sudo_abuse.yml
+│   └── container_escape.yml
+├── macos/               # macOS-specific detections
+│   ├── tcc_bypass.yml
+│   ├── gatekeeper_bypass.yml
+│   └── authorization_plugins.yml
+├── network/
+│   ├── dns_tunneling.yml
+│   └── proxy_evasion.yml
+└── owasp/               # OWASP Top 10 (web attacks)
+    ├── A03_injection/
+    ├── A07_auth_failures/
+    └── A10_ssrf/
+```
+
+### Creating Custom Sigma Rules
+
+<Steps>
+  <Step title="Identify Detection Logic">
+    **Question to answer**: What combination of fields indicates malicious activity?
+    
+    **Example**: Detect PsExec lateral movement
+    - Service creation (Event ID 7045)
+    - Service name matches PsExec pattern (`PSEXE*`)
+    - Service binary path is `*.exe` in ADMIN$ share
+  </Step>
+  
+  <Step title="Create Rule File">
+    Navigate to appropriate directory:
+    ```bash
+    cd rules/sigma/mitre/ta0008_lateral_movement/
+    ```
+    
+    Create new file:
+    ```bash
+    touch T1021_002_psexec_service_creation.yml
+    ```
+  </Step>
+  
+  <Step title="Write Rule YAML">
+    ```yaml
+    title: PsExec Lateral Movement via Service Creation
+    id: 12345678-1234-1234-1234-123456789012
+    status: stable
+    description: |
+      Detects PsExec-style lateral movement by identifying service
+      creation events with characteristic naming patterns and paths
+      pointing to ADMIN$ share binaries.
+    references:
+      - https://attack.mitre.org/techniques/T1021/002/
+      - https://docs.microsoft.com/en-us/sysinternals/downloads/psexec
+    author: Your Name
+    date: 2024/03/08
+    tags:
+      - attack.lateral_movement
+      - attack.t1021.002
+      - attack.execution
+    logsource:
+      product: windows
+      service: system
+    detection:
+      service_creation:
+        EventID: '7045'
+      psexec_naming:
+        ServiceName|startswith:
+          - 'PSEXE'
+          - 'PAExec'
+      admin_share_path:
+        ImagePath|contains: '\\\\ADMIN$'
+      condition: service_creation and psexec_naming and admin_share_path
+    falsepositives:
+      - Legitimate remote administration with PsExec
+      - SCCM or other deployment tools using similar patterns
+    level: high
+    ```
+  </Step>
+  
+  <Step title="Test Rule">
+    Restart Chronos-DFIR server (rules loaded on startup):
+    ```bash
+    # Ctrl+C to stop
+    python app.py
+    ```
+    
+    Ingest test data containing PsExec events.
+    
+    **Verify**:
+    - `Sigma_Tag` column shows rule title
+    - Forensic Insight modal shows detection under "Sigma Rule Detections"
+  </Step>
+  
+  <Step title="Tune for False Positives">
+    If rule triggers on legitimate activity:
+    
+    **Option 1**: Add filter block
+    ```yaml
+    detection:
+      service_creation:
+        EventID: '7045'
+      psexec_naming:
+        ServiceName|startswith: 'PSEXE'
+      legitimate_deployment:
+        ServiceName: 'PSEXESVC-SCCM'
+      condition: service_creation and psexec_naming and not legitimate_deployment
+    ```
+    
+    **Option 2**: Adjust level
+    ```yaml
+    level: medium  # Lower from high if FP rate is acceptable
+    ```
+  </Step>
+</Steps>
+
+### Field Name Mapping
+
+Sigma rules use **case-insensitive field lookups** with dot-notation fallback (`engine/sigma_engine.py` line 84):
+
+```python
+def _field_expr(col_name: str, columns: list[str]):
+    # Exact match first
+    for c in columns:
+        if c.lower() == col_name.lower():
+            return pl.col(c)
+    
+    # Dot-notation fallback: "EventData.CommandLine" → "CommandLine"
+    last_part = col_name.rsplit(".", 1)[-1]
+    for c in columns:
+        if c.lower() == last_part.lower():
+            return pl.col(c)
+    
+    return None  # Field not found - rule won't match
+```
+
+**Implications**:
+- Rule field `Image` matches DataFrame column `image`, `IMAGE`, or `Image`
+- Rule field `EventData.CommandLine` matches column `CommandLine` (common in Windows logs)
+- If field doesn't exist in data, rule **silently skips** (no error thrown)
+
+## YARA Rules
+
+### What is YARA?
+
+**YARA** is a pattern-matching tool for identifying malware based on textual or binary patterns. Originally designed for file scanning, Chronos-DFIR applies YARA rules to **forensic event fields** (CommandLine, file paths, message content).
+
+### How YARA Rules Work
+
+YARA evaluation happens during forensic analysis (`engine/forensic.py` → `run_yara_scan()`):
+
+<Steps>
+  <Step title="Rule Compilation">
+    **On analysis trigger**, Chronos compiles all `.yar` files from `rules/yara/` directory:
+    
+    ```python
+    import yara
+    
+    rules_compiled = yara.compile(filepaths={
+        'ransomware': 'rules/yara/ransomware/qilin_agenda.yar',
+        'c2': 'rules/yara/c2_frameworks/c2_frameworks.yar',
+        # ... all YARA files
+    })
+    ```
+  </Step>
+  
+  <Step title="Field Concatenation">
+    Key forensic fields are concatenated into a searchable text blob:
+    
+    ```python
+    def _row_to_scannable_text(row):
+        fields = [
+            row.get('CommandLine', ''),
+            row.get('Image', ''),
+            row.get('ParentCommandLine', ''),
+            row.get('TargetFilename', ''),
+            row.get('Destination_Entity', ''),
+            row.get('Details', '')
+        ]
+        return ' '.join([str(f) for f in fields if f])
+    ```
+  </Step>
+  
+  <Step title="Scan Execution">
+    Each row's text blob is scanned:
+    
+    ```python
+    for row in df.iter_rows(named=True):
+        scan_text = _row_to_scannable_text(row)
+        matches = rules_compiled.match(data=scan_text)
+        if matches:
+            # Populate YARA_Match column
+    ```
+  </Step>
+  
+  <Step title="Results Integration">
+    **YARA detections** included in:
+    - Forensic Insight modal ("YARA Detections" section)
+    - Context export JSON (`yara_detections` field)
+    - HTML/PDF reports
+  </Step>
+</Steps>
+
+### YARA Rule Structure
+
+**Example**: `rules/yara/ransomware/qilin_agenda.yar` (truncated)
+
+```yara
+rule QILIN_Ransomware_Strings_Windows {
+    meta:
+        description = "Detects QILIN/Agenda ransomware via strings"
+        author = "Chronos-DFIR"
+        date = "2026-03-07"
+        severity = "critical"
+        mitre = "T1486 – Data Encrypted for Impact"
+        tags = "ransomware, qilin, agenda, t1486"
+    
+    strings:
+        // Ransom note artifacts
+        $note1 = "RECOVER-README" ascii nocase wide
+        $note2 = "qilinsupport" ascii nocase wide
+        $note3 = ".qilin" ascii wide
+        
+        // VSS deletion (pre-encryption)
+        $vss_del1 = "vssadmin Delete Shadows /All /Quiet" ascii nocase wide
+        $bcdedit = "bcdedit /set {default} recoveryenabled No" ascii nocase wide
+        
+        // Process termination targets
+        $kill_sql = "sql" ascii nocase
+        $kill_veeam = "veeam" ascii nocase
+    
+    condition:
+        3 of ($note*) or
+        2 of ($vss_del*, $bcdedit) or
+        (1 of ($note*) and 2 of ($kill*))
+}
+```
+
+### YARA Rule Directory Structure
+
+```
+rules/yara/
+├── ransomware/
+│   ├── lockbit.yar           # LockBit 2.x/3.x patterns
+│   ├── qilin_agenda.yar      # QILIN/Agenda Go-based ransomware
+│   └── ransomware_generic.yar # Generic ransomware indicators
+├── c2_frameworks/
+│   └── c2_frameworks.yar     # Cobalt Strike, Sliver, Meterpreter
+├── infostealers/
+│   └── infostealers_generic.yar # RedLine, Raccoon, AZORult patterns
+├── lolbin/
+│   └── lolbin_abuse.yar      # Living-off-the-land binary abuse
+├── webshells/
+│   └── webshells_generic.yar # PHP/ASP/JSP webshell patterns
+└── macos/
+    └── macos_persistence.yar # LaunchAgents, cron, Authorization plugins
+```
+
+### Creating Custom YARA Rules
+
+<Steps>
+  <Step title="Define String Patterns">
+    Identify unique strings from known malware samples.
+    
+    **Example**: Custom backdoor detection
+    ```yara
+    rule Custom_Backdoor_Alpha {
+        meta:
+            description = "Detects Alpha backdoor via C2 domain"
+            author = "Your SOC"
+            severity = "high"
+        
+        strings:
+            $c2_domain = "alpha-c2.example.com" ascii nocase
+            $user_agent = "Mozilla/5.0 (AlphaBot)" ascii
+            $mutex = "AlphaBackdoorMutex" wide
+        
+        condition:
+            any of them
+    }
+    ```
+  </Step>
+  
+  <Step title="Add to Rules Directory">
+    ```bash
+    # Create category if needed
+    mkdir -p rules/yara/custom_threats/
+    
+    # Save rule
+    cat > rules/yara/custom_threats/alpha_backdoor.yar << 'EOF'
+    rule Custom_Backdoor_Alpha { ... }
+    EOF
+    ```
+  </Step>
+  
+  <Step title="Test Rule">
+    Restart Chronos-DFIR and ingest test data containing backdoor indicators.
+    
+    **Verify** in Forensic Insight modal:
+    - "YARA Detections" section lists matched rule
+    - Matched rows are tagged
+  </Step>
+</Steps>
+
+<Warning>
+  **Performance consideration**: YARA scanning is CPU-intensive. For datasets > 100K rows, consider limiting scan to high-risk fields (CommandLine, TargetFilename) or rows already flagged by Sigma rules.
+</Warning>
+
+## Detection Workflow Integration
+
+### Where Detections Appear
+
+<Accordion title="Timeline Grid">
+  **Columns added**:
+  - `Sigma_Tag`: Rule title(s) that matched this row
+  - `MITRE_Technique`: Comma-separated TTPs (e.g., `T1059.001, T1027`)
+  - `YARA_Match`: Rule name(s) from YARA scan
+  
+  **Visual indicators**:
+  - Rows with detections may be highlighted (future UI enhancement)
+  - Sort by `Sigma_Tag` to group all detected rows
+</Accordion>
+
+<Accordion title="Forensic Insight Modal">
+  Click **Context** button or **Forensic Insight Report** to open modal.
+  
+  **Sigma Detections section**:
+  - Table of all triggered rules
+  - Severity level (Critical/High/Medium/Low)
+  - Hit count per rule
+  - **Expandable evidence table** (150 sample rows with forensic context columns)
+  - **"View all in Grid" button** → filters main timeline to show all matching rows
+  
+  **YARA Detections section**:
+  - List of matched YARA rules
+  - Rule metadata (family, severity, MITRE mapping)
+</Accordion>
+
+<Accordion title="Dashboard Cards">
+  **Top Tactic card**: Shows MITRE tactics by detection frequency
+  
+  **Risk Score**: Calculated from Sigma hit severity + count (`engine/forensic.py` → `calculate_smart_risk_m4()`)
+  
+  **TTP Summary Strip** (below dashboard):
+  - Severity badges: `CRITICAL: N`, `HIGH: N`
+  - Top 6 MITRE technique pills (e.g., `T1003`, `T1059.001`)
+</Accordion>
+
+<Accordion title="Exports">
+  **CSV/Excel exports**: Include `Sigma_Tag`, `MITRE_Technique`, `YARA_Match` columns
+  
+  **Context JSON export**: Full detection details:
+  ```json
+  {
+    "sigma_detections": [
+      {
+        "title": "Suspicious PowerShell Encoded Command",
+        "level": "high",
+        "mitre_technique": "T1059.001",
+        "hit_count": 12,
+        "sample_evidence": [ /* 150 rows */ ],
+        "all_row_ids": [42, 157, 891, ...]
+      }
+    ],
+    "yara_detections": [
+      {
+        "rule": "Cobalt_Strike_Default_Profile",
+        "severity": "high",
+        "matched_rows": 3
+      }
+    ]
+  }
+  ```
+  
+  **HTML/PDF reports**: Formatted detection summaries with evidence tables
+</Accordion>
+
+## Advanced Detection Techniques
+
+### Chaining Multiple Rules
+
+**Scenario**: Detect full attack chain (initial access → execution → persistence)
+
+<Steps>
+  <Step title="Initial Access Detection">
+    Sigma rule detects phishing email attachment execution:
+    - Rule: `T1204_user_execution_malicious_file.yml`
+    - Matches: Process creation from `%TEMP%` with suspicious parent (Outlook, browser)
+  </Step>
+  
+  <Step title="Execution Detection">
+    Sigma rule detects encoded PowerShell:
+    - Rule: `T1059_001_powershell_encoded.yml`
+    - Matches: `powershell.exe -EncodedCommand`
+  </Step>
+  
+  <Step title="Persistence Detection">
+    Sigma rule detects registry Run key modification:
+    - Rule: `T1547_001_registry_run_keys.yml`
+    - Matches: Registry changes to `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+  </Step>
+  
+  <Step title="Manual Correlation">
+    **Current workflow**:
+    1. Filter timeline to rows with `Sigma_Tag` populated
+    2. Group by `User` or `Computer` to identify affected hosts
+    3. Manually trace event sequence using timestamps
+    
+    **Roadmap** (Etapa 4):
+    - Automatic correlation chains based on shared entities (User, Process, IP)
+    - Visual attack graph showing detection relationships
+  </Step>
+</Steps>
+
+### Custom Aggregation Logic
+
+**Example**: Brute force detection (not yet supported in Sigma v1.2)
+
+**Current workaround** using Polars post-processing:
+
+```python
+import polars as pl
+
+# Load processed data
+df = pl.read_csv("upload/processed_events.csv")
+
+# Detect failed logons (Event ID 4625)
+df_failed = df.filter(pl.col("EventID") == "4625")
+
+# Group by 5-minute windows + TargetUserName
+brute_force = df_failed.with_columns(
+    pl.col("Time").str.to_datetime().dt.truncate("5m").alias("time_bucket")
+).group_by(["time_bucket", "TargetUserName", "SourceIP"]).agg(
+    pl.count().alias("failed_attempts")
+).filter(pl.col("failed_attempts") > 10)
+
+print(brute_force)
+```
+
+**Roadmap**: Sigma `timeframe` and `count()` support (v1.3) will enable:
+
+```yaml
+detection:
+  failed_logon:
+    EventID: '4625'
+  timeframe: 5m
+  condition: failed_logon | count(TargetUserName, SourceIP) > 10
+```
+
+## Rule Management
+
+### Disabling Rules
+
+**Option 1**: Set rule status to `deprecated`
+
+```yaml
+status: deprecated
+```
+
+Sigma engine still loads the rule but marks it as inactive.
+
+**Option 2**: Move rule out of `rules/sigma/` directory
+
+```bash
+mv rules/sigma/mitre/ta0002_execution/noisy_rule.yml rules/sigma/.disabled/
+```
+
+Rule won't be loaded on next restart.
+
+### Rule Updates
+
+**Updating existing rules**:
+1. Edit `.yml` file in `rules/sigma/`
+2. Restart Chronos-DFIR server (rules cached on startup)
+3. Reingest test data to verify changes
+
+<Warning>
+  Rule cache is in-memory only. Changes require server restart.
+</Warning>
+
+**Pulling upstream rules** (SigmaHQ):
+
+```bash
+# Clone SigmaHQ repository
+git clone https://github.com/SigmaHQ/sigma.git /tmp/sigma
+
+# Copy relevant rules
+cp /tmp/sigma/rules/windows/process_creation/proc_creation_win_*.yml \
+   rules/sigma/mitre/ta0002_execution/
+
+# Restart Chronos
+python app.py
+```
+
+<Note>
+  Not all SigmaHQ rules are compatible with Chronos' Polars engine. Test rules after import and adjust field names if needed.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Case Management" icon="folder-open" href="/guides/case-management">
+    Organize detections across multiple files with case-based investigations
+  </Card>
+  
+  <Card title="Filtering & Searching" icon="filter" href="/guides/filtering-searching">
+    Navigate detected events efficiently with advanced filtering
+  </Card>
+  
+  <Card title="Evidence Ingestion" icon="file-arrow-up" href="/guides/evidence-ingestion">
+    Learn which forensic columns improve detection accuracy
+  </Card>
+</CardGroup>

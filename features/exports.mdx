@@ -1,0 +1,500 @@
+---
+title: 'Exports & Reports'
+description: 'Multi-format exports with forensic integrity preservation, AI-optimized context, and comprehensive HTML/PDF reports'
+icon: 'download'
+---
+
+## Overview
+
+Chronos-DFIR provides **forensic-grade exports** in multiple formats while preserving data integrity. All exports respect active filters (time range, global search, column filters, row selection) and maintain original values without auto-conversion.
+
+## Export Formats
+
+<CardGroup cols={2}>
+  <Card title="CSV" icon="file-csv">
+    UTF-8 with BOM for Excel compatibility. Hex values preserved with formula wrapping.
+  </Card>
+  <Card title="XLSX" icon="file-excel">
+    Excel spreadsheet with `xlsxwriter`. All cells written as strings to prevent auto-conversion.
+  </Card>
+  <Card title="JSON" icon="brackets-curly">
+    NDJSON format (one JSON object per line) for SOAR ingestion and log aggregation.
+  </Card>
+  <Card title="HTML Report" icon="file-code">
+    Self-contained forensic report with embedded charts, detections, and context.
+  </Card>
+  <Card title="PDF" icon="file-pdf">
+    Server-side PDF generation using WeasyPrint. Identical to HTML with print-optimized CSS.
+  </Card>
+  <Card title="Context (AI)" icon="brain">
+    Token-optimized JSON summary for LLM analysis with metadata and statistics.
+  </Card>
+</CardGroup>
+
+## Forensic Integrity Preservation
+
+### Hex Value Protection
+
+Chronos preserves hex values like `0x00000030` that Excel would normally convert to decimal:
+
+```python
+# From app.py:1150-1210 - CSV Export with Hex Protection
+def _export_csv_with_hex_protection(lf: pl.LazyFrame, out_path: str):
+    """
+    Export CSV with BOM + formula wrapping for hex columns to prevent Excel
+    auto-conversion (0x00000030 → 30).
+    """
+    # Detect hex-prone columns
+    schema = lf.collect_schema()
+    hex_candidates = []
+    for col in schema.names():
+        col_lower = col.lower()
+        if any(kw in col_lower for kw in 
+               ['hash', 'guid', 'sid', 'address', 'offset', 'mask']):
+            hex_candidates.append(col)
+    
+    df = lf.collect()
+    
+    # Wrap hex values in Excel formula: ="0x..."
+    for col in hex_candidates:
+        if col in df.columns:
+            df = df.with_columns(
+                pl.when(pl.col(col).cast(pl.Utf8).str.starts_with("0x"))
+                  .then(pl.concat_str([pl.lit('="'), pl.col(col), pl.lit('"')]))
+                  .otherwise(pl.col(col))
+                  .alias(col)
+            )
+    
+    # Write with UTF-8 BOM for Excel recognition
+    with open(out_path, 'wb') as f:
+        f.write('\ufeff'.encode('utf-8'))  # BOM
+    
+    df.write_csv(out_path, quote_style="always", mode='a')
+```
+
+<Warning>
+  **Critical for Forensics:** Without hex protection, values like memory addresses (`0x00401000`), registry SIDs, and hash prefixes get corrupted when opened in Excel. This violates chain of custody.
+</Warning>
+
+### XLSX with xlsxwriter
+
+All XLSX exports use `xlsxwriter` with explicit string formatting:
+
+```python
+# From app.py:1212-1280 - XLSX Export
+import xlsxwriter
+
+workbook = xlsxwriter.Workbook(out_path, {
+    'strings_to_numbers': False,  # Never auto-convert
+    'nan_inf_to_errors': True
+})
+worksheet = workbook.add_worksheet()
+
+# Define text format (prevents conversion)
+text_format = workbook.add_format({
+    'num_format': '@',  # Text format
+    'valign': 'top'
+})
+
+# Write headers
+header_format = workbook.add_format({
+    'bold': True,
+    'bg_color': '#f1f5f9',
+    'border': 1
+})
+for col_idx, col_name in enumerate(df.columns):
+    worksheet.write_string(0, col_idx, col_name, header_format)
+
+# Write ALL cells as strings (not worksheet.write() which auto-converts)
+for row_idx, row in enumerate(df.iter_rows(), start=1):
+    for col_idx, val in enumerate(row):
+        worksheet.write_string(row_idx, col_idx, str(val) if val else "", text_format)
+
+workbook.close()
+```
+
+<Note>
+  **Performance Impact:** Writing every cell as a string is slower than generic `write()` but is the **only way** to guarantee forensic integrity. For 100K rows × 50 columns, export takes ~15 seconds.
+</Note>
+
+## Filter Composition
+
+All exports respect the **composition of all active filters**:
+
+<Steps>
+  <Step title="Global Search">
+    Text search across all columns (debounced 500ms)
+    
+    ```python
+    if query and query.strip():
+        search_exprs = [
+            pl.col(c).cast(pl.Utf8, strict=False)
+              .str.contains(query, literal=True)
+            for c in lf.collect_schema().names()
+        ]
+        lf = lf.filter(pl.any_horizontal(search_exprs))
+    ```
+  </Step>
+  
+  <Step title="Column Filters">
+    Header-level filters (exact match, range, regex)
+    
+    ```python
+    if col_filters:
+        for field, flt in col_filters.items():
+            if flt['type'] == 'like':
+                lf = lf.filter(
+                    pl.col(field).cast(pl.Utf8)
+                      .str.contains(flt['value'], literal=True)
+                )
+            elif flt['type'] == '>':
+                lf = lf.filter(pl.col(field).cast(pl.Float64) > flt['value'])
+    ```
+  </Step>
+  
+  <Step title="Time Range">
+    Start/end time boundaries
+    
+    ```python
+    if start_time and start_time != "null":
+        lf = lf.filter(
+            pl.col(time_col) >= pl.lit(start_time).str.to_datetime(strict=False)
+        )
+    if end_time and end_time != "null":
+        lf = lf.filter(
+            pl.col(time_col) <= pl.lit(end_time).str.to_datetime(strict=False)
+        )
+    ```
+  </Step>
+  
+  <Step title="Row Selection">
+    Manual checkbox selection (persistent across pagination)
+    
+    ```python
+    if selected_ids and len(selected_ids) > 0:
+        lf = lf.filter(pl.col("_id").is_in(selected_ids))
+        # Renumber to sequential 1,2,3... for export
+        lf = lf.drop("_id").with_row_index(name="_id", offset=1)
+    ```
+  </Step>
+  
+  <Step title="Visible Columns">
+    Only export columns shown in grid
+    
+    ```python
+    if visible_columns:
+        target_cols = [pl.col(c) for c in visible_columns 
+                       if c in lf.collect_schema().names()]
+        lf = lf.select(target_cols)
+    ```
+  </Step>
+</Steps>
+
+<Info>
+  **Single Query Execution:** All filters are composed into a single Polars LazyFrame query and executed once during export. No intermediate materializations.
+</Info>
+
+## Context Export for AI Analysis
+
+The **Context export** generates a token-optimized JSON summary for LLM ingestion:
+
+```python
+# From engine/forensic.py:1100-1250 - generate_export_payloads()
+def generate_export_payloads(df: pl.DataFrame, yara_hits: list = None) -> dict:
+    """
+    Generate AI-optimized context export with statistics, IOCs, and detections.
+    Designed for single-prompt LLM consumption with minimal tokens.
+    """
+    context = {
+        "metadata": {
+            "total_events": df.height,
+            "time_range": {
+                "start": df[time_col].min() if time_col else None,
+                "end": df[time_col].max() if time_col else None,
+            },
+            "export_timestamp": datetime.utcnow().isoformat()
+        },
+        "statistics": {
+            "unique_ips": df.select(pl.col(ip_cols).n_unique()).sum_horizontal()[0],
+            "unique_users": df.select(pl.col(user_cols).n_unique()).sum_horizontal()[0],
+            "unique_hosts": df.select(pl.col(host_cols).n_unique()).sum_horizontal()[0],
+            "top_event_ids": df.group_by(eventid_col).agg(
+                pl.len().alias("count")
+            ).sort("count", descending=True).head(10).to_dicts()
+        },
+        "iocs": {
+            "ips": _extract_top_ips(df, limit=20),
+            "suspicious_paths": _extract_suspicious_paths(df, limit=15),
+            "rare_processes": _extract_rare_processes(df, limit=10)
+        },
+        "detections": {
+            "sigma_hits": sigma_hits,  # From match_sigma_rules()
+            "yara_hits": yara_hits,     # From YARA scan
+            "mitre_tactics": _extract_mitre_tactics(sigma_hits)
+        },
+        "risk": calculate_smart_risk_m4(df, sigma_hits)
+    }
+    
+    return {
+        "context_json": json.dumps(context, indent=2),
+        "token_estimate": len(json.dumps(context)) // 4  # Rough token count
+    }
+```
+
+**Example context export:**
+
+```json
+{
+  "metadata": {
+    "total_events": 38464,
+    "time_range": {
+      "start": "2026-03-01T08:15:22",
+      "end": "2026-03-08T14:45:33"
+    }
+  },
+  "statistics": {
+    "unique_ips": 47,
+    "unique_users": 12,
+    "unique_hosts": 3,
+    "top_event_ids": [
+      {"EventID": "4624", "count": 5234},
+      {"EventID": "4625", "count": 1872}
+    ]
+  },
+  "iocs": {
+    "ips": ["192.168.1.50", "10.0.0.25"],
+    "suspicious_paths": ["C:\\Windows\\Temp\\mimikatz.exe"],
+    "rare_processes": ["psexec.exe", "procdump.exe"]
+  },
+  "detections": {
+    "sigma_hits": [
+      {
+        "title": "Credential Dumping via LSASS",
+        "level": "critical",
+        "mitre_technique": "T1003.001",
+        "matched_rows": 12
+      }
+    ],
+    "mitre_tactics": ["Credential Access", "Defense Evasion"]
+  },
+  "risk": {
+    "level": "Critical",
+    "score": 147,
+    "justification": "12 Critical Sigma detections; 1872 failed logons"
+  }
+}
+```
+
+<Note>
+  **Token Optimization:** The context export limits top-N lists (top 10 EventIDs, top 20 IPs) to reduce token consumption. A typical 100K event dataset produces ~2,000 tokens of context.
+</Note>
+
+## HTML Forensic Report
+
+The HTML export is a **self-contained forensic report** with embedded charts and detections:
+
+```python
+# From app.py:1291-1527 - export_html()
+@app.post("/api/export/html")
+async def export_html(request: ExportRequest, background_tasks: BackgroundTasks):
+    # Apply all filters
+    lf = _apply_standard_processing(lf, params)
+    df_full = lf.collect()
+    
+    # Run parallel forensic analysis (9 tasks)
+    tasks = [
+        asyncio.to_thread(sub_analyze_timeline, df_p),
+        asyncio.to_thread(sub_analyze_context, df_p),
+        asyncio.to_thread(sub_analyze_hunting, df_p),
+        asyncio.to_thread(sub_analyze_identity_and_procs, df_p),
+        asyncio.to_thread(correlate_cross_source, df_p),
+        asyncio.to_thread(group_sessions, df_p),
+        asyncio.to_thread(detect_execution_artifacts, df_p),
+        asyncio.to_thread(match_sigma_rules, df_p),  # Sigma
+        asyncio.to_thread(_scan_yara, csv_path),      # YARA
+    ]
+    results = await asyncio.gather(*tasks)
+    
+    # Generate histogram chart as base64
+    histogram_data = analyze_dataframe(df_full)
+    chart_base64 = _render_chart_to_base64(histogram_data)
+    
+    # Render template
+    html_content = templates.TemplateResponse(
+        "static_report.html",
+        {
+            "request": request,
+            "timeline": results[0],
+            "context": results[1],
+            "hunting": results[2],
+            "identity": results[3],
+            "correlation": results[4],
+            "sessions": results[5],
+            "execution": results[6],
+            "sigma_hits": results[7],
+            "yara_hits": results[8],
+            "histogram_base64": chart_base64,
+            "risk": calculate_smart_risk_m4(df_full, results[7]),
+            "export_timestamp": datetime.utcnow().isoformat()
+        }
+    )
+```
+
+### HTML Report Features
+
+<CardGroup cols={2}>
+  <Card title="Embedded Charts" icon="chart-column">
+    Histogram rendered as base64 PNG (no external dependencies)
+  </Card>
+  <Card title="Sigma Evidence" icon="magnifying-glass">
+    Expandable `<details>` blocks with sample evidence tables
+  </Card>
+  <Card title="Print CSS" icon="print">
+    30+ print-optimized rules for readable PDF generation
+  </Card>
+  <Card title="Offline Rendering" icon="wifi-slash">
+    Zero external resources - works in air-gapped environments
+  </Card>
+</CardGroup>
+
+**Print CSS example:**
+
+```css
+/* From templates/static_report.html - Print CSS */
+@media print {
+  .risk-Critical { 
+    background-color: #fee2e2 !important; 
+    color: #991b1b !important; 
+    -webkit-print-color-adjust: exact;
+  }
+  
+  .snippet-box {
+    background-color: #f8fafc !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #1e293b !important;
+  }
+  
+  details { display: block !important; }
+  details summary { display: none; }
+  details[open] { border: none; }
+}
+```
+
+<Warning>
+  **PDF Generation:** The PDF export uses the **same HTML template** with server-side rendering via WeasyPrint. Ensure `weasyprint>=68.0` is installed: `pip install weasyprint`
+</Warning>
+
+## Split-Zip Export
+
+For datasets exceeding LLM context limits (e.g., > 200MB), split into chunks:
+
+```python
+# From app.py:1960-2062 - export_split_zip()
+@app.post("/api/export/split-zip")
+async def export_split_zip(request: ExportRequest):
+    chunk_size_bytes = request.chunk_size_mb * 1024 * 1024  # MB → bytes
+    
+    # Apply filters
+    lf = _apply_standard_processing(lf, params)
+    total_rows = lf.select(pl.len()).collect(streaming=True).item()
+    
+    # Determine batch size by probing first batch
+    df_probe = lf.slice(0, 1000).collect(streaming=True)
+    probe_csv = df_probe.write_csv()
+    bytes_per_row = len(probe_csv) / df_probe.height
+    batch_size = max(100, int(chunk_size_bytes / bytes_per_row))
+    
+    # Stream batches to temp files
+    temp_files = []
+    for offset in range(0, total_rows, batch_size):
+        df_batch = lf.slice(offset, batch_size).collect(streaming=True)
+        batch_file = f"chronos_chunk_{offset // batch_size + 1}.csv"
+        df_batch.write_csv(batch_file)
+        temp_files.append(batch_file)
+    
+    # Zip all batches
+    zip_path = f"chronos_split_{int(time.time())}.zip"
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for tf in temp_files:
+            zf.write(tf)
+    
+    return FileResponse(zip_path)
+```
+
+<Info>
+  **Use Case:** Split a 500MB CSV into 5 × 99MB chunks for Claude Code or ChatGPT Code Interpreter ingestion.
+</Info>
+
+## Forensic Summary XLSX
+
+The forensic modal's "Excel" button exports a **structured summary** (not raw data):
+
+```python
+# From app.py:1528-1779 - export_forensic_summary()
+@app.post("/api/export/forensic-summary")
+async def export_forensic_summary(request: Request):
+    body = await request.json()
+    forensic_data = body.get("forensic_data", {})
+    
+    workbook = xlsxwriter.Workbook(out_path)
+    worksheet = workbook.add_worksheet("Forensic Summary")
+    
+    # Formats
+    header_fmt = workbook.add_format({'bold': True, 'bg_color': '#2563eb', 
+                                      'font_color': '#ffffff'})
+    section_fmt = workbook.add_format({'bold': True, 'bg_color': '#f1f5f9'})
+    
+    row = 0
+    
+    # Write sections
+    row = write_section(worksheet, row, "Timeline Analysis", 
+                        forensic_data.get("timeline", {}), header_fmt)
+    row = write_section(worksheet, row, "Sigma Detections",
+                        forensic_data.get("sigma_hits", []), header_fmt)
+    row = write_section(worksheet, row, "YARA Detections",
+                        forensic_data.get("yara_hits", []), header_fmt)
+    row = write_section(worksheet, row, "MITRE Kill Chain",
+                        forensic_data.get("kill_chain", []), header_fmt)
+    # ... 12 total sections
+    
+    workbook.close()
+```
+
+**Sections included:**
+1. Header metadata (file, filters, timestamp)
+2. Timeline analysis (EPS, time range)
+3. Forensic summary (IPs, users, hosts, paths)
+4. Chronos Hunter (suspicious patterns)
+5. Identity & Assets (processes, rare events)
+6. **Sigma detections with sample evidence**
+7. YARA detections
+8. MITRE kill chain
+9. Cross-source correlation
+10. Session profiles
+11. Risk justification
+
+## Performance
+
+| Export Type | 10K Rows | 100K Rows | 1M Rows |
+|-------------|----------|-----------|----------|
+| CSV | < 1s | 2-3s | 10-15s |
+| XLSX | 2-3s | 15-20s | 2-3 min |
+| JSON (NDJSON) | < 1s | 2-4s | 12-18s |
+| HTML Report | 3-5s | 10-15s | 30-45s |
+| PDF (WeasyPrint) | 5-8s | 20-30s | 1-2 min |
+| Context (AI) | < 1s | 1-2s | 3-5s |
+
+<Note>
+  **Streaming Writes:** All exports > 50MB use Polars' `sink_csv()` or chunked iteration to avoid loading the entire dataset into memory.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="API Reference" icon="code" href="/api/export">
+    Programmatic export endpoints
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Try Chronos-DFIR with sample data
+  </Card>
+</CardGroup>

@@ -1,0 +1,606 @@
+---
+title: Installation Guide
+description: Complete setup instructions for Chronos-DFIR on Windows, macOS, and Linux
+---
+
+# Installation Guide
+
+This guide covers the complete installation process for Chronos-DFIR, from system requirements to running your first analysis.
+
+## System Requirements
+
+<CardGroup cols={2}>
+  <Card title="Python Version" icon="python">
+    **Python 3.12 or higher** (3.12.0 recommended)
+    
+    Verify your version:
+    ```bash
+    python --version
+    # or
+    python3 --version
+    ```
+  </Card>
+  
+  <Card title="Memory" icon="memory">
+    **Minimum**: 8GB RAM
+    
+    **Recommended**: 16GB+ for large datasets (1M+ events)
+  </Card>
+  
+  <Card title="Storage" icon="hard-drive">
+    **Application**: ~500MB
+    
+    **Working Space**: 10GB+ for temporary processing files
+  </Card>
+  
+  <Card title="Operating System" icon="desktop">
+    **Supported**:
+    - macOS 12+ (Apple Silicon optimized)
+    - Windows 10/11
+    - Linux (Ubuntu 20.04+, Debian 11+)
+  </Card>
+</CardGroup>
+
+<Warning>
+Chronos-DFIR requires Python 3.12+ due to dependencies on modern asyncio features and Polars 1.37+. Python 3.11 and below are not supported.
+</Warning>
+
+## Installation Methods
+
+### Method 1: Standard Installation (Recommended)
+
+<Steps>
+  <Step title="Clone the Repository">
+    ```bash
+    git clone https://github.com/your-org/chronos-dfir.git
+    cd chronos-dfir
+    ```
+    
+    Or download the latest release:
+    
+    ```bash
+    wget https://github.com/your-org/chronos-dfir/archive/refs/tags/v1.1-beta.tar.gz
+    tar -xzf v1.1-beta.tar.gz
+    cd chronos-dfir-1.1-beta
+    ```
+  </Step>
+  
+  <Step title="Create a Virtual Environment">
+    <CodeGroup>
+    ```bash macOS/Linux
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
+    
+    ```bash Windows (PowerShell)
+    python -m venv venv
+    .\venv\Scripts\Activate.ps1
+    ```
+    
+    ```bash Windows (Command Prompt)
+    python -m venv venv
+    venv\Scripts\activate.bat
+    ```
+    </CodeGroup>
+    
+    <Info>
+    Using a virtual environment isolates Chronos-DFIR dependencies from your system Python packages, preventing conflicts.
+    </Info>
+  </Step>
+  
+  <Step title="Install Dependencies">
+    Install all required Python packages from `requirements.txt`:
+    
+    ```bash
+    pip install --upgrade pip
+    pip install -r requirements.txt
+    ```
+    
+    This installs 49 packages including:
+    
+    | Package | Version | Purpose |
+    |---------|---------|----------|
+    | `fastapi` | 0.128.0 | Web framework and REST API |
+    | `uvicorn` | 0.40.0 | ASGI server for FastAPI |
+    | `polars` | 1.37.1 | Vectorized data processing |
+    | `pyarrow` | 23.0.0 | Columnar data format |
+    | `evtx` | 0.11.0 | Windows Event Log parser |
+    | `xlsxwriter` | 3.2.9 | Excel export with format control |
+    | `PyYAML` | 6.0.2 | Sigma rule parsing |
+    | `yara-python` | 4.5.0+ | Malware signature matching |
+    | `weasyprint` | 68.0+ | Server-side PDF generation |
+    | `httpx` | 0.27.0+ | Threat intelligence API client |
+    | `duckdb` | 1.1.0+ | Case management database |
+    
+    <Note>
+    Installation may take 3-5 minutes depending on your internet speed. Some packages (like `weasyprint`) have native dependencies that may require additional system libraries.
+    </Note>
+  </Step>
+  
+  <Step title="Platform-Specific Dependencies">
+    **macOS (Homebrew):**
+    
+    ```bash
+    # Required for WeasyPrint PDF generation
+    brew install cairo pango gdk-pixbuf libffi
+    ```
+    
+    **Ubuntu/Debian:**
+    
+    ```bash
+    # Required for WeasyPrint and YARA compilation
+    sudo apt-get update
+    sudo apt-get install -y \
+      python3-dev \
+      build-essential \
+      libcairo2-dev \
+      libpango1.0-dev \
+      libgdk-pixbuf2.0-dev \
+      libffi-dev \
+      shared-mime-info
+    ```
+    
+    **Windows:**
+    
+    WeasyPrint requires GTK3 runtime. Download and install from:
+    
+    ```
+    https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer/releases
+    ```
+    
+    Alternatively, skip PDF generation and use the browser's print function instead.
+  </Step>
+  
+  <Step title="Verify Installation">
+    Test that all core dependencies loaded successfully:
+    
+    ```bash
+    python -c "import polars, fastapi, evtx, yaml, yara; print('All dependencies OK')"
+    ```
+    
+    Expected output:
+    
+    ```
+    All dependencies OK
+    ```
+    
+    If you encounter import errors, see the [Troubleshooting](#troubleshooting) section.
+  </Step>
+</Steps>
+
+### Method 2: Docker Installation (Beta)
+
+<Warning>
+Docker support is experimental in v1.1. Use the standard installation method for production.
+</Warning>
+
+```bash
+# Build the image
+docker build -t chronos-dfir:latest .
+
+# Run the container
+docker run -d \
+  --name chronos \
+  -p 8000:8000 \
+  -v $(pwd)/chronos_uploads:/app/chronos_uploads \
+  -v $(pwd)/chronos_output:/app/chronos_output \
+  chronos-dfir:latest
+
+# Access at http://localhost:8000
+```
+
+## Environment Configuration
+
+<Steps>
+  <Step title="Copy Environment Template">
+    Create your local environment file from the template:
+    
+    ```bash
+    cp .env.example .env
+    ```
+    
+    The `.env.example` file contains:
+    
+    ```bash
+    # Chronos-DFIR — Threat Intelligence API Keys
+    # Copy this file to .env and fill in your keys.
+    # Providers without keys (IP-API, URLhaus) work automatically.
+    
+    # AbuseIPDB — IP reputation (free: 1000 checks/day)
+    # Get your key at: https://www.abuseipdb.com/account/api
+    ABUSEIPDB_API_KEY=
+    
+    # VirusTotal — Hash/IP/Domain lookup (free: 4 req/min, 500/day)
+    # Get your key at: https://www.virustotal.com/gui/my-apikey
+    VIRUSTOTAL_API_KEY=
+    
+    # URLScan.io — Passive domain scanning (free: 100 scans/day)
+    # Get your key at: https://urlscan.io/user/profile/
+    URLSCAN_API_KEY=
+    
+    # HaveIBeenPwned — Credential breach check (paid: $3.50/month)
+    # Get your key at: https://haveibeenpwned.com/API/Key
+    HIBP_API_KEY=
+    ```
+  </Step>
+  
+  <Step title="Configure Threat Intelligence (Optional)">
+    Chronos-DFIR works 100% offline by default. Threat intelligence enrichment is optional but enhances analysis:
+    
+    <CardGroup cols={2}>
+      <Card title="Free Tier Providers" icon="gift">
+        - **AbuseIPDB**: 1,000 IP checks/day
+        - **VirusTotal**: 4 requests/min, 500/day
+        - **URLScan.io**: 100 scans/day
+        - **IP-API**: Built-in, no key required
+      </Card>
+      
+      <Card title="Premium Providers" icon="crown">
+        - **HaveIBeenPwned**: $3.50/month
+        - **VirusTotal Premium**: 1,000 req/min
+        - **AbuseIPDB Premium**: 60,000/day
+      </Card>
+    </CardGroup>
+    
+    Edit `.env` and add your API keys:
+    
+    ```bash
+    ABUSEIPDB_API_KEY=your_key_here
+    VIRUSTOTAL_API_KEY=your_key_here
+    ```
+    
+    <Note>
+    Keys are loaded via `python-dotenv` at startup. Restart the server after updating `.env`.
+    </Note>
+  </Step>
+  
+  <Step title="Create Working Directories">
+    Chronos-DFIR auto-creates these on first run, but you can create them manually:
+    
+    ```bash
+    mkdir -p chronos_uploads chronos_output static templates
+    ```
+    
+    | Directory | Purpose | Cleanup |
+    |-----------|---------|----------|
+    | `chronos_uploads/` | Uploaded forensic artifacts | Auto-cleared on startup |
+    | `chronos_output/` | Parsed CSV files and exports | Auto-cleared on startup |
+    | `static/` | JavaScript, CSS, frontend assets | Persistent |
+    | `templates/` | Jinja2 HTML templates | Persistent |
+    | `rules/sigma/` | YAML detection rules (86 files) | Persistent |
+    | `rules/yara/` | Malware signatures (7 files) | Persistent |
+  </Step>
+</Steps>
+
+## Running the Server
+
+<Steps>
+  <Step title="Standard Launch">
+    Start the FastAPI server with Uvicorn:
+    
+    ```bash
+    uvicorn app:app --host 0.0.0.0 --port 8000
+    ```
+    
+    Expected output:
+    
+    ```
+    INFO:     Started server process [12345]
+    INFO:     Waiting for application startup.
+    INFO:     Sigma Engine: loaded 86 rules from rules/sigma
+    INFO:     Asset version hash: a3f21c89
+    INFO:     Startup cleanup complete: /chronos_uploads and /chronos_output cleared.
+    INFO:     Application startup complete.
+    INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+    ```
+    
+    <Info>
+    The server binds to all network interfaces (`0.0.0.0`). Access from other machines on your network via your IP address.
+    </Info>
+  </Step>
+  
+  <Step title="Development Mode (Auto-Reload)">
+    Enable auto-restart when code changes:
+    
+    ```bash
+    uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+    ```
+    
+    This watches Python files in the current directory and reloads the server automatically. Useful for development and testing.
+  </Step>
+  
+  <Step title="Production Deployment">
+    For production use, increase worker count and disable reload:
+    
+    ```bash
+    uvicorn app:app \
+      --host 0.0.0.0 \
+      --port 8000 \
+      --workers 4 \
+      --log-level warning \
+      --access-log
+    ```
+    
+    Worker count recommendations:
+    
+    - **CPU cores**: 2-4 → 2 workers
+    - **CPU cores**: 8+ → 4 workers
+    - **CPU cores**: 16+ → 6-8 workers
+    
+    <Warning>
+    Multi-worker mode disables shared in-memory state. Case management features require sticky sessions or single-worker deployment.
+    </Warning>
+  </Step>
+  
+  <Step title="Run Behind a Reverse Proxy (Optional)">
+    For HTTPS and domain access, use Nginx or Caddy:
+    
+    **Nginx configuration:**
+    
+    ```nginx
+    server {
+        listen 443 ssl http2;
+        server_name chronos.yourorg.com;
+        
+        ssl_certificate /etc/ssl/certs/chronos.crt;
+        ssl_certificate_key /etc/ssl/private/chronos.key;
+        
+        client_max_body_size 10G;  # Allow large file uploads
+        
+        location / {
+            proxy_pass http://127.0.0.1:8000;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            
+            # WebSocket support (future feature)
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+        }
+    }
+    ```
+    
+    **Caddy configuration:**
+    
+    ```caddy
+    chronos.yourorg.com {
+        reverse_proxy localhost:8000
+        request_body {
+            max_size 10GB
+        }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Verification
+
+<Steps>
+  <Step title="Check Web Interface">
+    Open your browser and navigate to:
+    
+    ```
+    http://localhost:8000
+    ```
+    
+    You should see the Chronos-DFIR dark-mode interface with:
+    
+    - Sidebar with drag-and-drop upload area
+    - Main grid area (empty until first upload)
+    - Histogram chart area (hidden until data loaded)
+    - Toolbar with Export, Filter, and Context buttons
+  </Step>
+  
+  <Step title="Verify Detection Engines">
+    Check the server logs for Sigma rule loading:
+    
+    ```
+    INFO:     Sigma Engine: loaded 86 rules from rules/sigma
+    ```
+    
+    Test YARA engine:
+    
+    ```bash
+    python -c "import yara; print('YARA version:', yara.__version__)"
+    ```
+    
+    Expected: `YARA version: 4.5.0` or higher
+  </Step>
+  
+  <Step title="Test File Upload">
+    Upload a small test file to verify the pipeline:
+    
+    ```bash
+    # Create a test CSV
+    echo -e "Time,EventID,User,Process\n2024-03-09 10:00:00,4624,admin,explorer.exe\n2024-03-09 10:01:00,4688,admin,powershell.exe" > test.csv
+    ```
+    
+    Drag `test.csv` into the web interface. You should see:
+    
+    ```json
+    {
+      "status": "success",
+      "processed_records": 2,
+      "file_category": "generic"
+    }
+    ```
+  </Step>
+  
+  <Step title="Run Test Suite (Optional)">
+    Verify core functionality with pytest:
+    
+    ```bash
+    pytest -v tests/
+    ```
+    
+    Expected: 68 tests passing
+    
+    <Note>
+    Test suite requires `pytest` and `httpx`. Install with: `pip install pytest httpx`
+    </Note>
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### Common Issues
+
+<Warning>
+**Issue**: `ModuleNotFoundError: No module named 'polars'`
+
+**Solution**: Activate your virtual environment before running:
+```bash
+source venv/bin/activate  # macOS/Linux
+venv\Scripts\activate     # Windows
+```
+</Warning>
+
+<Warning>
+**Issue**: `ImportError: DLL load failed while importing _yara` (Windows)
+
+**Solution**: Install Visual C++ Redistributable:
+```
+https://aka.ms/vs/17/release/vc_redist.x64.exe
+```
+</Warning>
+
+<Warning>
+**Issue**: WeasyPrint errors during PDF export
+
+**Solution**: Use browser print instead. Open the HTML report and press Ctrl+P / Cmd+P. The CSS is print-optimized.
+</Warning>
+
+<Warning>
+**Issue**: `OSError: [Errno 24] Too many open files`
+
+**Solution**: Increase file descriptor limit:
+```bash
+# macOS/Linux
+ulimit -n 4096
+
+# Make permanent (add to ~/.bashrc or ~/.zshrc):
+echo 'ulimit -n 4096' >> ~/.bashrc
+```
+</Warning>
+
+### Performance Tuning
+
+**For large datasets (1M+ events):**
+
+```bash
+# Increase Python memory limit (Linux/macOS)
+export PYTHONMALLOC=malloc
+
+# Enable Polars streaming engine
+export POLARS_MAX_THREADS=8  # Match your CPU core count
+```
+
+**For Apple Silicon (M1/M2/M4):**
+
+```bash
+# Use native ARM64 Python
+which python3
+# Should show: /opt/homebrew/bin/python3
+
+# If using x86_64 Python, reinstall with Homebrew:
+brew install python@3.12
+```
+
+### Logs and Debugging
+
+**Enable debug logging:**
+
+```bash
+uvicorn app:app --log-level debug
+```
+
+**View error logs:**
+
+```bash
+# Backend errors (Python exceptions)
+tail -f /tmp/chronos_histogram_error.log
+
+# Browser console (JavaScript errors)
+# Chrome: F12 → Console tab
+# Firefox: F12 → Console tab
+```
+
+## Upgrading
+
+<Steps>
+  <Step title="Pull Latest Code">
+    ```bash
+    git pull origin main
+    ```
+  </Step>
+  
+  <Step title="Update Dependencies">
+    ```bash
+    pip install --upgrade -r requirements.txt
+    ```
+  </Step>
+  
+  <Step title="Clear Cache">
+    Hard refresh the browser:
+    
+    - **Windows/Linux**: Ctrl+Shift+R
+    - **macOS**: Cmd+Shift+R
+    
+    Or use the built-in reset:
+    
+    ```bash
+    # Via API
+    curl -X POST http://localhost:8000/api/reset
+    ```
+  </Step>
+  
+  <Step title="Restart Server">
+    ```bash
+    # Stop: Ctrl+C
+    # Start:
+    uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+    ```
+  </Step>
+</Steps>
+
+## Uninstallation
+
+<Steps>
+  <Step title="Stop the Server">
+    Press `Ctrl+C` in the terminal running Uvicorn.
+  </Step>
+  
+  <Step title="Deactivate Virtual Environment">
+    ```bash
+    deactivate
+    ```
+  </Step>
+  
+  <Step title="Remove Files">
+    ```bash
+    # Remove application directory
+    rm -rf chronos-dfir/
+    
+    # Optional: Remove virtual environment
+    rm -rf venv/
+    ```
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start Guide" icon="rocket" href="/quickstart">
+    Upload your first artifact and generate a forensic timeline
+  </Card>
+  
+  <Card title="Detection Rules" icon="shield-halved" href="/guides/detection-rules">
+    Customize Sigma rules, YARA signatures, and detection settings
+  </Card>
+</CardGroup>
+
+---
+
+**Having installation issues?** Check the [GitHub Issues](https://github.com/your-org/chronos-dfir/issues) or consult the [troubleshooting guide](/troubleshooting).

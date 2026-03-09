@@ -1,0 +1,620 @@
+---
+title: 'Analysis Endpoints'
+description: 'Query timelines, generate histograms, and run forensic reports'
+icon: 'chart-line'
+---
+
+## GET /api/data/{filename}
+
+Retrieve paginated timeline data with filtering, sorting, and time range queries. Uses **lazy evaluation** for out-of-core processing.
+
+### Path Parameters
+
+<ParamField path="filename" type="string" required>
+  CSV filename returned from `/upload` endpoint (e.g., `Security_evtx_1704067200.csv`)
+</ParamField>
+
+### Query Parameters
+
+<ParamField query="page" type="integer" default="1">
+  Page number (1-indexed)
+</ParamField>
+
+<ParamField query="size" type="integer" default="50">
+  Records per page (max: 1000)
+</ParamField>
+
+<ParamField query="query" type="string">
+  Global search query (case-insensitive, searches all columns)
+</ParamField>
+
+<ParamField query="start_time" type="string" format="ISO 8601">
+  Filter events after this timestamp (inclusive)
+</ParamField>
+
+<ParamField query="end_time" type="string" format="ISO 8601">
+  Filter events before this timestamp (inclusive)
+</ParamField>
+
+<ParamField query="col_filters" type="string" format="JSON">
+  Column-specific filters (e.g., `{"EventID":"4624","User":"admin"}`)
+</ParamField>
+
+<ParamField query="sort_col" type="string">
+  Column name to sort by (alternative: `sort[0][field]` for Tabulator.js compatibility)
+</ParamField>
+
+<ParamField query="sort_dir" type="string" enum="asc,desc">
+  Sort direction (alternative: `sort[0][dir]`)
+</ParamField>
+
+### Response Schema
+
+<ResponseField name="current_page" type="integer">
+  Current page number
+</ResponseField>
+
+<ResponseField name="last_page" type="integer">
+  Total number of pages
+</ResponseField>
+
+<ResponseField name="total" type="integer">
+  Total records matching filters
+</ResponseField>
+
+<ResponseField name="total_unfiltered" type="integer">
+  Total records in file (before filters)
+</ResponseField>
+
+<ResponseField name="data" type="array">
+  Array of timeline events (objects with dynamic schema)
+</ResponseField>
+
+<ResponseField name="start_time" type="string" nullable>
+  Earliest timestamp in filtered dataset
+</ResponseField>
+
+<ResponseField name="end_time" type="string" nullable>
+  Latest timestamp in filtered dataset
+</ResponseField>
+
+### Examples
+
+<CodeGroup>
+
+```bash Basic Query
+curl "http://localhost:8000/api/data/Security_evtx_1704067200.csv?page=1&size=50"
+```
+
+```bash Search Query
+curl "http://localhost:8000/api/data/Security_evtx_1704067200.csv?query=powershell"
+```
+
+```bash Time Range Filter
+curl "http://localhost:8000/api/data/Security_evtx_1704067200.csv?start_time=2024-01-01T00:00:00&end_time=2024-01-02T00:00:00"
+```
+
+```bash Column Filter + Sort
+curl "http://localhost:8000/api/data/Security_evtx_1704067200.csv?col_filters={\"EventID\":\"4624\"}&sort_col=Time&sort_dir=desc"
+```
+
+```python Python Client
+import requests
+
+response = requests.get(
+    "http://localhost:8000/api/data/Security_evtx_1704067200.csv",
+    params={
+        "page": 1,
+        "size": 100,
+        "query": "admin",
+        "start_time": "2024-01-01T00:00:00",
+        "col_filters": '{"EventID":"4624"}'
+    }
+)
+
+data = response.json()
+print(f"Total matches: {data['total']}")
+for event in data['data']:
+    print(f"{event['Time']} - {event['EventID']}")
+```
+
+</CodeGroup>
+
+### Response Example
+
+```json
+{
+  "current_page": 1,
+  "last_page": 842,
+  "total": 42084,
+  "total_unfiltered": 85000,
+  "start_time": "2024-01-01T00:00:00.000Z",
+  "end_time": "2024-01-07T23:59:59.999Z",
+  "data": [
+    {
+      "_id": 1,
+      "Time": "2024-01-01T08:23:45.123Z",
+      "EventID": "4624",
+      "User": "SYSTEM",
+      "Computer": "WORKSTATION-01",
+      "Message": "An account was successfully logged on"
+    },
+    {
+      "_id": 2,
+      "Time": "2024-01-01T08:24:12.456Z",
+      "EventID": "4688",
+      "User": "admin",
+      "CommandLine": "powershell.exe -ExecutionPolicy Bypass"
+    }
+  ]
+}
+```
+
+---
+
+## GET /api/histogram/{filename}
+
+Generate time-series histogram with event distribution, peaks, and outlier detection.
+
+### Path Parameters
+
+<ParamField path="filename" type="string" required>
+  CSV filename from upload
+</ParamField>
+
+### Query Parameters
+
+<ParamField query="exclude_id" type="string">
+  EventID to exclude from histogram (e.g., `4624` for logon noise reduction)
+</ParamField>
+
+<ParamField query="start_time" type="string" format="ISO 8601">
+  Time range start
+</ParamField>
+
+<ParamField query="end_time" type="string" format="ISO 8601">
+  Time range end
+</ParamField>
+
+<ParamField query="query" type="string">
+  Global search filter
+</ParamField>
+
+<ParamField query="col_filters" type="string" format="JSON">
+  Column-specific filters
+</ParamField>
+
+<ParamField query="selected_ids" type="string" format="JSON">
+  Row IDs for subset histogram (e.g., `["5","20","100"]`)
+</ParamField>
+
+### Response Schema
+
+<ResponseField name="labels" type="array<string>">
+  X-axis labels (timestamps or time buckets)
+</ResponseField>
+
+<ResponseField name="datasets" type="array<object>">
+  Chart.js dataset objects with event counts per bucket
+</ResponseField>
+
+<ResponseField name="stats" type="object">
+  Statistical summary
+  
+  <ResponseField name="peak" type="integer">
+    Maximum events in a single bucket
+  </ResponseField>
+  
+  <ResponseField name="mean" type="float">
+    Average events per bucket
+  </ResponseField>
+  
+  <ResponseField name="start_time" type="string">
+    Dataset start timestamp
+  </ResponseField>
+  
+  <ResponseField name="end_time" type="string">
+    Dataset end timestamp
+  </ResponseField>
+</ResponseField>
+
+<ResponseField name="interpretation" type="string">
+  Human-readable summary (e.g., "High activity spike detected at 2024-01-01 14:00")
+</ResponseField>
+
+### Example
+
+```bash
+curl "http://localhost:8000/api/histogram/Security_evtx_1704067200.csv?exclude_id=4624"
+```
+
+### Response Example
+
+```json
+{
+  "labels": ["2024-01-01 08:00", "2024-01-01 09:00", "2024-01-01 10:00"],
+  "datasets": [
+    {
+      "label": "Event Distribution",
+      "data": [1250, 3420, 2180],
+      "backgroundColor": "rgba(30, 58, 95, 0.8)",
+      "type": "bar"
+    },
+    {
+      "label": "Peak Threshold",
+      "data": [3420, 3420, 3420],
+      "borderColor": "#dc2626",
+      "type": "line"
+    }
+  ],
+  "stats": {
+    "peak": 3420,
+    "mean": 2283.3,
+    "start_time": "2024-01-01T08:00:00.000Z",
+    "end_time": "2024-01-01T23:59:59.999Z"
+  },
+  "interpretation": "High activity spike detected at 2024-01-01 09:00 (150% above baseline)"
+}
+```
+
+---
+
+## POST /api/forensic_report
+
+Generate comprehensive forensic analysis with **parallel execution** of:
+
+- Timeline analysis (peaks, gaps, anomalies)
+- Context extraction (users, IPs, processes)
+- Threat hunting (suspicious patterns)
+- Sigma rule matching (86 rules)
+- YARA scanning
+- MITRE ATT&CK mapping
+- Cross-source correlation
+- Session profiling
+- Risk scoring (Smart Risk Engine M4)
+- Threat intelligence enrichment
+
+### Request Body
+
+<ParamField body="filename" type="string" required>
+  CSV filename to analyze
+</ParamField>
+
+<ParamField body="query" type="string" optional>
+  Global search filter
+</ParamField>
+
+<ParamField body="col_filters" type="object" optional>
+  Column-specific filters
+</ParamField>
+
+<ParamField body="selected_ids" type="array<string>" optional>
+  Row IDs for subset analysis
+</ParamField>
+
+<ParamField body="start_time" type="string" optional>
+  Time range start
+</ParamField>
+
+<ParamField body="end_time" type="string" optional>
+  Time range end
+</ParamField>
+
+<ParamField body="sort_col" type="string" optional>
+  Sort column
+</ParamField>
+
+<ParamField body="sort_dir" type="string" optional>
+  Sort direction
+</ParamField>
+
+### Response Schema
+
+<ResponseField name="total_records" type="integer">
+  Number of events analyzed
+</ResponseField>
+
+<ResponseField name="filename" type="string">
+  Source filename
+</ResponseField>
+
+<ResponseField name="top_tactic" type="string">
+  Most common tactic/event type (e.g., "Win EventID 4688: Process Creation")
+</ResponseField>
+
+<ResponseField name="primary_identity" type="string">
+  Most active user/IP
+</ResponseField>
+
+<ResponseField name="risk_level" type="string" enum="Critical,High,Medium,Low">
+  Overall risk assessment
+</ResponseField>
+
+<ResponseField name="risk_score" type="integer" range="0-100">
+  Numeric risk score
+</ResponseField>
+
+<ResponseField name="risk_justify" type="array<string>">
+  Risk justification factors (e.g., ["Sigma critical hit: Mimikatz detected", "Lateral movement detected"])
+</ResponseField>
+
+<ResponseField name="eps" type="float">
+  Events per second (activity rate)
+</ResponseField>
+
+<ResponseField name="results" type="array<object>">
+  Analysis results from 4 parallel tasks:
+  
+  - **Timeline**: Peaks, gaps, time range
+  - **Context**: Users, IPs, hosts, paths, event IDs
+  - **Hunting**: Suspicious patterns, network connections, logon events
+  - **Identity**: Top processes, rare executions, asset inventory
+</ResponseField>
+
+<ResponseField name="sigma_hits" type="array<object>">
+  Matched Sigma rules with evidence rows
+  
+  <ResponseField name="title" type="string">
+    Rule name
+  </ResponseField>
+  
+  <ResponseField name="level" type="string" enum="critical,high,medium,low">
+    Severity level
+  </ResponseField>
+  
+  <ResponseField name="mitre_technique" type="string">
+    MITRE ATT&CK technique ID (e.g., "T1059.001")
+  </ResponseField>
+  
+  <ResponseField name="matched_rows" type="integer">
+    Total matching events
+  </ResponseField>
+  
+  <ResponseField name="sample_evidence" type="array<object>">
+    First 150 matching rows with forensic context columns
+  </ResponseField>
+  
+  <ResponseField name="all_row_ids" type="array<integer>">
+    All matching row IDs (up to 500)
+  </ResponseField>
+</ResponseField>
+
+<ResponseField name="yara_hits" type="array<object>">
+  YARA rule matches (scans first 5MB of CSV text)
+</ResponseField>
+
+<ResponseField name="mitre_kill_chain" type="array<object>">
+  MITRE ATT&CK tactics derived from Sigma hits
+</ResponseField>
+
+<ResponseField name="cross_source_correlation" type="object">
+  Cross-file correlation chains (user, IP, process pivots)
+</ResponseField>
+
+<ResponseField name="session_profiles" type="array<object>">
+  Session behavior profiles (dwell time, request patterns)
+</ResponseField>
+
+<ResponseField name="execution_artifacts" type="object">
+  Detected execution artifacts (Prefetch, ShimCache, AmCache)
+</ResponseField>
+
+<ResponseField name="threat_intelligence" type="object">
+  IOC enrichment from threat feeds (VirusTotal, AbuseIPDB, etc.)
+</ResponseField>
+
+### Example
+
+<CodeGroup>
+
+```bash Full Report
+curl -X POST http://localhost:8000/api/forensic_report \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filename": "Security_evtx_1704067200.csv"
+  }'
+```
+
+```bash Filtered Report
+curl -X POST http://localhost:8000/api/forensic_report \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filename": "Security_evtx_1704067200.csv",
+    "col_filters": {"User": "admin"},
+    "start_time": "2024-01-01T00:00:00"
+  }'
+```
+
+```python Python Client
+import requests
+
+response = requests.post(
+    "http://localhost:8000/api/forensic_report",
+    json={
+        "filename": "Security_evtx_1704067200.csv",
+        "col_filters": {"EventID": "4688"},
+        "query": "powershell"
+    }
+)
+
+report = response.json()
+print(f"Risk: {report['risk_level']} ({report['risk_score']}/100)")
+print(f"Sigma hits: {len(report['sigma_hits'])}")
+for hit in report['sigma_hits']:
+    print(f"  - {hit['title']} ({hit['level']})")
+```
+
+</CodeGroup>
+
+### Response Example (Abbreviated)
+
+```json
+{
+  "total_records": 42084,
+  "filename": "Security_evtx_1704067200.csv",
+  "top_tactic": "Win EventID 4688: Process Creation",
+  "primary_identity": "admin",
+  "risk_level": "High",
+  "risk_score": 78,
+  "risk_justify": [
+    "Sigma critical hit: Mimikatz Execution Detected",
+    "Lateral movement to 5 hosts",
+    "Suspicious PowerShell execution (-EncodedCommand)"
+  ],
+  "eps": 2.45,
+  "results": [
+    {
+      "type": "timeline",
+      "peaks": [
+        {"hour": "2024-01-01 14:00", "count": 3420}
+      ],
+      "time_range": "2024-01-01 to 2024-01-07"
+    },
+    {
+      "type": "context",
+      "users": [{"id": "admin", "count": 12500}],
+      "ips": [{"id": "192.168.1.100", "count": 8200}]
+    }
+  ],
+  "sigma_hits": [
+    {
+      "title": "Mimikatz Execution Detected",
+      "level": "critical",
+      "mitre_technique": "T1003.001",
+      "matched_rows": 3,
+      "sample_evidence": [
+        {
+          "Time": "2024-01-01T14:23:45.123Z",
+          "EventID": "4688",
+          "CommandLine": "mimikatz.exe sekurlsa::logonpasswords",
+          "User": "admin"
+        }
+      ],
+      "all_row_ids": [1250, 1251, 1252]
+    }
+  ],
+  "yara_hits": [
+    {
+      "rule": "Mimikatz_Keywords",
+      "namespace": "windows",
+      "tags": ["credential_dumping"],
+      "strings_matched": 2
+    }
+  ],
+  "mitre_kill_chain": [
+    {
+      "tactic": "Credential Access",
+      "threat_level": "critical",
+      "count": 3,
+      "description": "T1003.001: LSASS Memory Dumping"
+    }
+  ]
+}
+```
+
+### Performance
+
+Report generation uses **parallel execution** with `asyncio.gather()` (9 concurrent tasks):
+
+- Timeline analysis: ~0.8s
+- Context extraction: ~1.2s
+- Hunting patterns: ~1.5s
+- Identity analysis: ~1.0s
+- Sigma matching: ~2.5s
+- YARA scan: ~0.5s
+- Correlation: ~1.8s
+- Sessions: ~1.2s
+- Execution artifacts: ~0.9s
+- **Total**: ~3.5s (wall-clock time, 9 tasks in parallel)
+
+*Tested on 42,084 EVTX events*
+
+<Note>
+  Threat intelligence enrichment adds 5-30s depending on API rate limits.
+</Note>
+
+---
+
+## POST /api/histogram_subset
+
+Generate histogram for **selected rows only** (subset analysis).
+
+### Request Body
+
+<ParamField body="filename" type="string" required>
+  CSV filename
+</ParamField>
+
+<ParamField body="selected_ids" type="array<string>" required>
+  Row IDs to include (e.g., `["5", "20", "100"]`)
+</ParamField>
+
+<ParamField body="query" type="string" optional>
+  Global search filter
+</ParamField>
+
+<ParamField body="col_filters" type="object" optional>
+  Column filters
+</ParamField>
+
+<ParamField body="start_time" type="string" optional>
+  Time range start
+</ParamField>
+
+<ParamField body="end_time" type="string" optional>
+  Time range end
+</ParamField>
+
+### Response
+
+Same schema as `/api/histogram/{filename}` with `interpretation` prefixed by `"Filtered View: "`.
+
+---
+
+## GET /api/empty_columns/{filename}
+
+Identify completely empty columns (all nulls or empty strings) for UI optimization.
+
+### Query Parameters
+
+Same filtering params as `/api/data/{filename}` (query, col_filters, start_time, end_time, selected_ids).
+
+### Response
+
+```json
+{
+  "empty_columns": ["Field5", "Hashes", "ParentImage"]
+}
+```
+
+<Note>
+  Excludes internal columns (`_id`, `No.`, `Original_No.`) from empty check.
+</Note>
+
+---
+
+## GET /api/timeseries/{filename}
+
+Advanced timeseries analysis with trend detection and peak identification using the `chronos_timeseries_builder` skill.
+
+### Response Schema
+
+<ResponseField name="trend" type="string" enum="alza,baja,estable">
+  Trend direction (rising, falling, stable)
+</ResponseField>
+
+<ResponseField name="peaks" type="array<object>">
+  Detected peaks with timestamps and magnitudes
+</ResponseField>
+
+<ResponseField name="chart_data" type="object">
+  Chart.js-compatible dataset
+</ResponseField>
+
+---
+
+## Next Steps
+
+<Card title="Export Endpoints" icon="download" href="/api/export">
+  Export filtered datasets in CSV, XLSX, PDF, HTML formats
+</Card>

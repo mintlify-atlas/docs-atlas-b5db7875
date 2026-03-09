@@ -1,0 +1,291 @@
+---
+title: 'API Overview'
+description: 'Chronos-DFIR REST API architecture, authentication, and common patterns'
+icon: 'code'
+---
+
+## Architecture
+
+Chronos-DFIR provides a **FastAPI-based REST API** for forensic timeline analysis and DFIR data processing. The API is designed for high-performance streaming operations on large evidence files (6GB+) using:
+
+- **Polars lazy evaluation** for out-of-core processing
+- **Streaming I/O** with chunked uploads/downloads
+- **Async-first endpoints** for concurrent operations
+- **Chain of custody** with SHA256 hashing during upload
+
+## Base URL
+
+All API endpoints are served from the application root:
+
+```
+http://localhost:8000
+```
+
+<Note>
+  The API runs on port 8000 by default. Use `uvicorn app:app --host 0.0.0.0 --port 8000` to start the server.
+</Note>
+
+## Authentication
+
+Chronos-DFIR **does not require authentication** for local forensic analysis workflows. The API is designed for:
+
+- **Local deployment** on analyst workstations
+- **Air-gapped environments** for sensitive investigations
+- **Trusted network** access only
+
+<Warning>
+  Do NOT expose the API to untrusted networks. Use SSH tunneling or VPN for remote access.
+</Warning>
+
+## Request/Response Format
+
+### Content Types
+
+- **JSON**: Default for all structured data exchanges
+- **Multipart Form Data**: File uploads (`/upload` endpoint)
+- **Binary Streams**: Large file downloads
+
+### Common Request Headers
+
+```http
+Content-Type: application/json
+Accept: application/json
+```
+
+### Standard Response Schema
+
+Success responses follow this pattern:
+
+```json
+{
+  "status": "success",
+  "data": { /* endpoint-specific payload */ },
+  "metadata": { /* optional */ }
+}
+```
+
+Error responses:
+
+```json
+{
+  "error": "Detailed error message",
+  "status_code": 500
+}
+```
+
+## Pagination
+
+Endpoints returning large datasets use **cursor-based pagination**:
+
+<ParamField query="page" type="integer" default="1">
+  Current page number (1-indexed)
+</ParamField>
+
+<ParamField query="size" type="integer" default="50">
+  Records per page (max: 1000)
+</ParamField>
+
+Paginated response format:
+
+```json
+{
+  "current_page": 1,
+  "last_page": 842,
+  "total": 42084,
+  "total_unfiltered": 85000,
+  "data": [ /* records */ ]
+}
+```
+
+## Filtering & Querying
+
+Chronos-DFIR supports **unified filtering** across all data endpoints:
+
+### Global Text Search
+
+<ParamField query="query" type="string">
+  Case-insensitive search across ALL columns. Uses Polars vectorized string matching.
+</ParamField>
+
+```bash
+curl "http://localhost:8000/api/data/file.csv?query=powershell"
+```
+
+### Column Filters
+
+<ParamField query="col_filters" type="string">
+  JSON-encoded object mapping column names to filter values. Supports exact match and regex.
+</ParamField>
+
+```bash
+curl "http://localhost:8000/api/data/file.csv?col_filters={\"EventID\":\"4624\"}"
+```
+
+### Time Range Filtering
+
+<ParamField query="start_time" type="string" format="ISO 8601">
+  Filter events after this timestamp (inclusive)
+</ParamField>
+
+<ParamField query="end_time" type="string" format="ISO 8601">
+  Filter events before this timestamp (inclusive)
+</ParamField>
+
+```bash
+curl "http://localhost:8000/api/data/file.csv?start_time=2024-01-01T00:00:00&end_time=2024-01-02T00:00:00"
+```
+
+### Row Selection
+
+<ParamField query="selected_ids" type="string">
+  JSON array of row IDs for subset analysis (e.g., `["5", "20", "100"]`)
+</ParamField>
+
+### Sorting
+
+<ParamField query="sort_col" type="string">
+  Column name to sort by
+</ParamField>
+
+<ParamField query="sort_dir" type="string" enum="asc,desc">
+  Sort direction (ascending or descending)
+</ParamField>
+
+Alternatively, use Tabulator.js format:
+
+```bash
+curl "http://localhost:8000/api/data/file.csv?sort[0][field]=Time&sort[0][dir]=desc"
+```
+
+## Error Handling
+
+### HTTP Status Codes
+
+| Code | Meaning | Example |
+|------|---------|----------|
+| 200 | Success | Data retrieved successfully |
+| 400 | Bad Request | Invalid filter syntax |
+| 404 | Not Found | File does not exist |
+| 500 | Internal Error | Processing failure |
+| 504 | Gateway Timeout | Enrichment timeout (30s limit) |
+
+### Common Error Scenarios
+
+<CodeGroup>
+
+```json File Not Found
+{
+  "error": "File not found",
+  "status_code": 404
+}
+```
+
+```json Out of Memory
+{
+  "error": "OOM during normalization. Using raw file.",
+  "status_code": 500
+}
+```
+
+```json Dataset Too Large
+{
+  "error": "Dataset too large for Excel export (150000 rows). Please filter your data below 100000 rows or use CSV/JSON export.",
+  "status_code": 400
+}
+```
+
+</CodeGroup>
+
+## Performance Considerations
+
+### Streaming Architecture
+
+Chronos-DFIR uses **lazy evaluation** with Polars `scan_csv()` and `sink_csv()` to process files larger than available RAM:
+
+- Files are **never fully loaded** into memory
+- Filters are pushed down to the scan layer
+- Only requested pages are materialized
+
+### Rate Limiting
+
+No built-in rate limiting. For production deployments, use:
+
+- Nginx rate limiting (`limit_req_zone`)
+- Traefik middleware
+- API Gateway (AWS, Azure)
+
+### Concurrent Requests
+
+FastAPI supports **async concurrency**. The forensic report endpoint uses `asyncio.gather()` to parallelize:
+
+- Timeline analysis
+- Sigma rule matching
+- YARA scanning
+- Threat intelligence enrichment
+
+<Note>
+  Peak parallelism: 9 concurrent tasks in `/api/forensic_report`
+</Note>
+
+## Data Formats
+
+### Supported Input Formats
+
+| Format | Extension | Parser |
+|--------|-----------|--------|
+| CSV | `.csv` | Polars scan_csv |
+| Excel | `.xlsx` | Polars read_excel |
+| JSON | `.json`, `.jsonl`, `.ndjson` | Polars read_json |
+| Parquet | `.parquet` | Polars scan_parquet |
+| SQLite | `.db`, `.sqlite`, `.sqlite3` | Cursor + Polars DataFrame |
+| Plist | `.plist` | plistlib + Polars |
+| MFT | `.mft` | Custom binary parser |
+| EVTX | `.evtx` | evtx_dump + Polars |
+| Whitespace-delimited | `.pslist`, `.txt`, `.log` | Regex parser |
+| ZIP | `.zip` | Automatic extraction |
+
+### Output Formats
+
+- **CSV**: UTF-8 with BOM (Excel-compatible)
+- **XLSX**: `xlsxwriter` with text formatting for hex values
+- **JSON**: Standard array format `[{...}, {...}]`
+- **PDF**: Multi-method fallback (WeasyPrint → Playwright → xhtml2pdf)
+- **HTML**: Standalone report with embedded Chart.js
+
+## Chain of Custody
+
+All file uploads compute **SHA256 hash** during streaming upload (zero extra I/O):
+
+```json
+{
+  "chain_of_custody": {
+    "sha256": "a3f5b2c1...",
+    "file_size_bytes": 6442450944,
+    "original_filename": "Security.evtx"
+  }
+}
+```
+
+<Warning>
+  Timestamps in parsed artifacts (MFT, EVTX) are **never fabricated**. If parsing fails, fields are set to `null` to maintain forensic integrity.
+</Warning>
+
+## API Endpoint Categories
+
+- **[Upload](/api/upload)**: File ingestion with artifact-type routing
+- **[Analysis](/api/analysis)**: Data retrieval, histogram, forensic reports
+- **[Export](/api/export)**: Multi-format exports (CSV, XLSX, PDF, HTML, JSON)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Upload Endpoint" icon="upload" href="/api/upload">
+    Stream forensic artifacts with chain of custody
+  </Card>
+  <Card title="Analysis Endpoints" icon="chart-line" href="/api/analysis">
+    Query timelines, generate histograms, run forensic reports
+  </Card>
+  <Card title="Export Endpoints" icon="download" href="/api/export">
+    Export filtered datasets in CSV, XLSX, PDF, HTML
+  </Card>
+</CardGroup>

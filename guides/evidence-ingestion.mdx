@@ -1,0 +1,460 @@
+---
+title: Evidence Ingestion
+description: Step-by-step guide to ingest forensic artifacts and reports into Chronos-DFIR
+---
+
+## Overview
+
+Chronos-DFIR supports ingestion of forensic artifacts (EVTX, MFT, PLIST) and various report formats (CSV, XLSX, JSON, Parquet, SQLite) through a unified drag-and-drop interface. All files pass through a robust normalization and parsing engine to create a unified timeline structure.
+
+<Info>
+  All ingested data is processed locally — Chronos-DFIR requires no internet connection for evidence processing and detection.
+</Info>
+
+## Supported File Formats
+
+### Native Forensic Artifacts
+
+<Accordion title="EVTX - Windows Event Logs">
+  **Format**: Windows Event Log binary format
+  
+  **Processing**: Optimized EVTX parser extracts:
+  - EventID, Level, Provider
+  - Computer, User, timestamps
+  - EventData fields (CommandLine, ProcessName, IPs, etc.)
+  
+  **Best for**: Windows security logs, Sysmon, PowerShell logging
+  
+  **Example sources**:
+  - `C:\Windows\System32\winevt\Logs\Security.evtx`
+  - `C:\Windows\System32\winevt\Logs\Microsoft-Windows-Sysmon%4Operational.evtx`
+</Accordion>
+
+<Accordion title="MFT - Master File Table">
+  **Format**: NTFS Master File Table binary
+  
+  **Processing**: Parses `$STANDARD_INFORMATION` attributes from MFT records:
+  - Real FILETIME timestamps (Created, Modified, MFT Modified, Accessed)
+  - File paths and metadata
+  - Zero timestamp fabrication (forensic integrity guaranteed)
+  
+  **Best for**: File system timeline reconstruction, deleted file analysis
+  
+  **Extraction**: Use tools like `MFTECmd.exe` or extract directly:
+  ```bash
+  # Extract MFT from live system (admin required)
+  fsutil usn readdata C: > mft_extract.bin
+  ```
+</Accordion>
+
+<Accordion title="PLIST - macOS Property Lists">
+  **Format**: macOS Property List (binary or XML)
+  
+  **Processing**: Detects and parses:
+  - LaunchAgents and LaunchDaemons (persistence mechanisms)
+  - ProgramArguments, RunAtLoad, KeepAlive flags
+  - Bundle identifiers and signatures
+  
+  **Best for**: macOS persistence analysis, startup items
+  
+  **Example locations**:
+  - `/Library/LaunchDaemons/*.plist`
+  - `~/Library/LaunchAgents/*.plist`
+  - `/System/Library/LaunchDaemons/*.plist`
+  
+  **ZIP bundles**: Upload multiple PLISTs as a ZIP archive for bulk analysis
+</Accordion>
+
+### Report Formats
+
+<Steps>
+  <Step title="CSV / TSV">
+    Ingests reports from Plaso, KAPE, EDRs, and custom forensic tools.
+    
+    **Features**:
+    - Automatic column detection and normalization
+    - Handles headerless CSV (e.g., `ls -la` output)
+    - UTF-8 and UTF-8 lossy encoding support
+    - Whitespace-delimited parsing for `pslist` and log files
+    
+    **Example**: Plaso supertimeline CSV export
+  </Step>
+  
+  <Step title="Excel (.xlsx)">
+    Reads Excel spreadsheets with automatic sheet detection.
+    
+    **Best for**: Analyst-curated reports, EDR exports
+    
+    <Note>
+      First sheet is processed by default. Multi-sheet workbooks use the first populated sheet.
+    </Note>
+  </Step>
+  
+  <Step title="JSON / JSONL / NDJSON">
+    Parses structured event logs in JSON format.
+    
+    **Processing**:
+    - Auto-flattens nested JSON structures
+    - Supports line-delimited JSON (JSONL/NDJSON)
+    - Handles arrays and nested objects
+    
+    **Example sources**: Cloud logs (AWS CloudTrail, Azure Activity), SIEM exports
+  </Step>
+  
+  <Step title="Parquet">
+    Columnar format for massive datasets.
+    
+    **Performance**: Streaming ingestion via Polars `scan_parquet` — handles multi-GB files without loading into RAM.
+    
+    **Best for**: Big Data hunting platforms, EDR full dataset exports
+  </Step>
+  
+  <Step title="SQLite (.db)">
+    Reads SQLite databases directly.
+    
+    **Processing**:
+    - Auto-detects tables (prioritizes: `events`, `logs`, `timeline`, `entries`)
+    - Extracts first non-system table if no standard table found
+    
+    **Example sources**: Browser history, Windows Timeline, Volatility analysis results
+  </Step>
+  
+  <Step title="TXT / LOG Files">
+    Intelligent text parser with multiple detection modes:
+    
+    **1. macOS Unified Logs**:
+    ```
+    2024-03-08 14:23:45.123-0800 hostname process[1234]: message content
+    ```
+    
+    **2. macOS Persistence Triage** (`ls -la` output):
+    ```
+    drwxr-xr-x  5 root  wheel  160 Mar  8 14:23 /Library/LaunchDaemons
+    -rw-r--r--  1 root  wheel  512 Mar  8 14:23 com.example.plist
+    ```
+    
+    **3. Whitespace-delimited fallback** for generic log formats
+  </Step>
+</Steps>
+
+## Ingestion Workflow
+
+<Steps>
+  <Step title="Select Evidence File">
+    **Option 1: Drag & Drop**
+    
+    Drag forensic artifacts directly onto the Chronos-DFIR interface.
+    
+    **Option 2: File Browser**
+    
+    Click **Select File** to open your operating system's file picker.
+    
+    <Warning>
+      Maximum file size: 6GB+ supported via streaming upload (no RAM saturation).
+    </Warning>
+  </Step>
+  
+  <Step title="Process Artifact">
+    Click **Process Artifact** to start ingestion.
+    
+    **Backend processing**:
+    1. **SHA256 hash** computed during streaming upload (chain of custody)
+    2. **Format detection** based on file extension and content fingerprinting
+    3. **Parsing engine** extracts structured data:
+       - EVTX: `evtx_engine.py`
+       - MFT: `mft_engine.py` with real FILETIME parsing
+       - Multi-format: `engine/ingestor.py` with Polars streaming
+    4. **Normalization**:
+       - Timestamps → `Time` column (ISO 8601)
+       - EventID detection (Windows Event IDs, custom identifiers)
+       - IP addresses, usernames, paths extracted to standardized columns
+    5. **Detection rules applied**:
+       - **Sigma rules** (86+ rules) evaluated row-by-row
+       - **YARA rules** (7 files) scan CommandLine, paths, and message fields
+    6. **MITRE ATT&CK mapping** enriches detections with TTPs
+    
+    <Info>
+      Processing time: ~10K events/second on Apple Silicon M4 (vectorized Polars engine).
+    </Info>
+  </Step>
+  
+  <Step title="Review Timeline">
+    Once processed, the unified timeline grid displays:
+    
+    - **Timestamp** column (pinned, sortable)
+    - **No.** (row counter for navigation)
+    - **Tag** (checkbox for manual row selection)
+    - **All detected columns** from the source file
+    - **Enrichment columns**: `Sigma_Tag`, `YARA_Match`, `MITRE_Technique`
+    
+    The **histogram** above the grid visualizes event volume over time with automatic time-bucketing (seconds/minutes/hours/days based on data range).
+  </Step>
+</Steps>
+
+## Best Practices
+
+### Evidence Handling
+
+<Accordion title="Chain of Custody">
+  Chronos-DFIR computes **SHA256 hash** during upload (zero extra I/O).
+  
+  **Accessing hash**:
+  - Upload response includes `chain_of_custody` field with SHA256 + file size
+  - Export Context (JSON) includes hash in metadata section
+  
+  **Forensic integrity**:
+  - Original evidence files remain unmodified
+  - Processed CSV stored in `upload/` directory with normalized schema
+  - No timestamp fabrication (MFT timestamps parsed from real `$STANDARD_INFORMATION` structs)
+</Accordion>
+
+<Accordion title="Large File Handling">
+  **Files > 50MB**: Use streaming ingestion automatically
+  
+  **Implementation** (`engine/ingestor.py`):
+  ```python
+  # Lazy evaluation - never loads full dataset into RAM
+  lf = pl.scan_parquet(file_path)
+  lf = lf.with_row_index(name="_id", offset=1)
+  lf.sink_csv(dest_path)  # Stream to disk
+  ```
+  
+  **Supported for**: Parquet, CSV, TSV, JSON (line-delimited)
+  
+  <Warning>
+    EVTX, MFT, XLSX, and SQLite require eager loading (full file read) due to format constraints.
+  </Warning>
+</Accordion>
+
+<Accordion title="Multi-Source Ingestion">
+  **Current workflow** (single-file mode):
+  - Click **Hard Reset ⟲** before loading a new file to prevent cross-contamination
+  - Each ingestion purges previous DataFrame, UI state, and LocalStorage
+  
+  **Roadmap** (Etapa 4 - Multi-File Correlation):
+  - Case-based workflow will support loading multiple files per investigation
+  - Cross-file correlation engine for unified multi-source timeline
+  - Phase-based file organization within cases
+</Accordion>
+
+### File Preparation Tips
+
+<Steps>
+  <Step title="Clean Column Names">
+    While Chronos normalizes column headers, cleaner source data improves accuracy:
+    
+    **Good**:
+    - `Timestamp`, `Time`, `EventTime`, `CreationTime`
+    - `EventID`, `Event ID`, `event_id`
+    
+    **Acceptable** (auto-normalized):
+    - `_time` → `Time`
+    - `_id` → `Original_Id`
+    - `123` → `Field_123`
+  </Step>
+  
+  <Step title="Include Forensic Context Columns">
+    For best detection accuracy, ensure your export includes:
+    
+    **27 forensic context columns** (`engine/sigma_engine.py` line 283):
+    ```python
+    FORENSIC_CONTEXT_COLUMNS = [
+        "User", "TargetUserName", "SubjectUserName", "Account",
+        "Process", "Image", "ProcessName", "ParentImage", "ParentProcessName",
+        "CommandLine", "ParentCommandLine",
+        "SourceIP", "DestinationIP", "IpAddress", "Source_Ip", "Dest_Ip",
+        "Computer", "Workstation", "SourceWorkstation",
+        "SourcePort", "DestinationPort",
+        "EventID", "Level", "Provider", "Channel",
+        "LogonType", "AuthenticationPackageName", "SHA256"
+    ]
+    ```
+    
+    These columns enrich Sigma detection evidence tables automatically.
+  </Step>
+  
+  <Step title="Timestamp Format">
+    **Supported formats** (auto-detected):
+    - ISO 8601: `2024-03-08T14:23:45.123Z`
+    - Windows FILETIME: `132945678901234567`
+    - Unix epoch: `1709912625`
+    - Human-readable: `2024-03-08 14:23:45.123-0800`
+    
+    **Column names detected** as timestamps:
+    - `Time`, `Timestamp`, `DateTime`, `EventTime`, `CreationTime`
+    - `CreateTime`, `ModifiedTime`, `AccessedTime`
+    - `@timestamp`, `_time`, `Timezone` (XDR fallback)
+    
+    <Note>
+      If no timestamp column is detected, Chronos operates in "artifact mode" (distribution charts replace timeline histogram).
+    </Note>
+  </Step>
+</Steps>
+
+## Troubleshooting Common Issues
+
+### Upload Fails or Hangs
+
+**Symptom**: File upload progress bar stalls or shows error
+
+**Solutions**:
+
+<Accordion title="File Size Limits">
+  **Browser limit**: 6GB+ files may trigger browser memory limits
+  
+  **Workaround**:
+  1. Split large EVTX files:
+     ```powershell
+     # Windows: Export time-range slices
+     wevtutil epl Security security_march.evtx "/q:*[System[TimeCreated[@SystemTime>='2024-03-01T00:00:00' and @SystemTime<'2024-04-01T00:00:00']]]"
+     ```
+  
+  2. Convert to Parquet (streaming-friendly):
+     ```python
+     import polars as pl
+     df = pl.read_csv("huge_timeline.csv")
+     df.write_parquet("timeline.parquet", compression="zstd")
+     ```
+</Accordion>
+
+<Accordion title="Encoding Issues">
+  **Symptom**: Garbled text, missing characters
+  
+  **Cause**: Non-UTF8 file encoding
+  
+  **Fix**: The ingestor auto-retries with `encoding='utf8-lossy'`
+  
+  If issues persist, pre-convert:
+  ```bash
+  # Linux/macOS
+  iconv -f ISO-8859-1 -t UTF-8 input.csv > output.csv
+  
+  # Windows PowerShell
+  Get-Content input.csv -Encoding Default | Set-Content output.csv -Encoding UTF8
+  ```
+</Accordion>
+
+### No Events Showing After Processing
+
+**Symptom**: Grid shows "No data" despite successful upload
+
+**Causes**:
+
+<Steps>
+  <Step title="Check Time Range Filter">
+    Filters may be hiding all events.
+    
+    **Fix**: Click **Reset Filters ⟳** to clear time range, global search, and column filters
+  </Step>
+  
+  <Step title="Empty Source File">
+    File may contain only headers or malformed data.
+    
+    **Verify**:
+    - Check backend logs (browser DevTools → Console)
+    - Look for parsing errors: `"row_count": 0` in upload response
+  </Step>
+  
+  <Step title="Unsupported Format">
+    File extension may not match content.
+    
+    **Example**: CSV saved as `.log` without headers
+    
+    **Fix**: Rename to correct extension or add CSV headers
+  </Step>
+</Steps>
+
+### Timestamps Not Parsing
+
+**Symptom**: `Time` column shows original strings instead of formatted timestamps
+
+**Solutions**:
+
+<Accordion title="Column Not Detected">
+  Chronos looks for columns named: `Time`, `Timestamp`, `DateTime`, `EventTime`, etc.
+  
+  **Fix**: Rename your timestamp column before upload:
+  ```python
+  df = df.rename({"CreatedDate": "Time"})
+  df.write_csv("fixed_timeline.csv")
+  ```
+</Accordion>
+
+<Accordion title="Custom Timestamp Format">
+  If your timestamps use a non-standard format, they may not auto-parse.
+  
+  **Workaround**: Pre-convert to ISO 8601:
+  ```python
+  import polars as pl
+  df = pl.read_csv("data.csv")
+  df = df.with_columns(
+      pl.col("CustomTime").str.strptime(pl.Datetime, "%d-%m-%Y %H:%M:%S").alias("Time")
+  )
+  df.write_csv("normalized.csv")
+  ```
+</Accordion>
+
+### Sigma/YARA Rules Not Detecting
+
+**Symptom**: No `Sigma_Tag` or `YARA_Match` columns despite known malicious activity
+
+**Verify rule coverage**:
+
+<Accordion title="Check Field Names">
+  Sigma rules expect specific field names (case-insensitive).
+  
+  **Example**: `rules/sigma/mitre/ta0002_execution/T1059_001_powershell_encoded.yml`
+  ```yaml
+  detection:
+    powershell_process:
+      Image|endswith:
+        - '\\powershell.exe'
+    encoded_param:
+      CommandLine|contains|any:
+        - ' -EncodedCommand '
+        - ' -Enc '
+  ```
+  
+  **Required columns**: `Image`, `CommandLine`
+  
+  If your data uses different names (`Process` instead of `Image`), rules won't match.
+  
+  **Fix**: Rename columns before ingestion or customize rules in `rules/sigma/`
+</Accordion>
+
+<Accordion title="Rule Categories">
+  **86+ Sigma rules** organized by MITRE tactic:
+  - `rules/sigma/mitre/ta0001_initial_access/` — Phishing, exploit detection
+  - `rules/sigma/mitre/ta0002_execution/` — PowerShell, WMI, scripting
+  - `rules/sigma/mitre/ta0003_persistence/` — Registry, scheduled tasks, services
+  - `rules/sigma/artifacts/` — Prefetch, ShimCache, AmCache, SRUM, UserAssist
+  - `rules/sigma/browser/` — History manipulation, cookie theft
+  - `rules/sigma/linux/` — Reverse shells, SSH, sudo abuse, auditd
+  - `rules/sigma/macos/` — TCC bypass, Gatekeeper, Authorization plugins
+  
+  **7 YARA rule files** in `rules/yara/`:
+  - `ransomware/` — LockBit, QILIN, generic ransomware patterns
+  - `c2_frameworks/` — Cobalt Strike, Sliver, Meterpreter
+  - `infostealers/` — Generic infostealer patterns
+  - `lolbin/` — Living-off-the-land binary abuse
+  - `webshells/` — PHP/ASP/JSP webshells
+  - `macos/` — macOS persistence mechanisms
+  
+  If your data doesn't match these categories, detections won't trigger.
+</Accordion>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Filtering & Searching" icon="filter" href="/guides/filtering-searching">
+    Learn to navigate and filter your timeline with global search, time ranges, and column management
+  </Card>
+  
+  <Card title="Detection Rules" icon="shield-halved" href="/guides/detection-rules">
+    Understand Sigma and YARA rule evaluation, and create custom detection logic
+  </Card>
+  
+  <Card title="Case Management" icon="folder-open" href="/guides/case-management">
+    Organize multi-file investigations with cases, phases, journal entries, and correlation
+  </Card>
+</CardGroup>
