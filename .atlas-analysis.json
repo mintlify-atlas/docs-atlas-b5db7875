@@ -1,0 +1,102 @@
+{
+  "projectType": "saas",
+  "projectName": "Chronos-DFIR",
+  "projectDescription": "A forensic timeline analysis tool for DFIR professionals that ingests multi-format evidence and provides interactive threat detection.",
+  "theme": "aspen",
+  "primaryColor": "#00e676",
+  "lightColor": "#4ade80",
+  "darkColor": "#00c853",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/file-ingestion",
+              "features/timeline-analysis",
+              "features/threat-detection",
+              "features/exports"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/evidence-ingestion",
+              "guides/filtering-searching",
+              "guides/detection-rules",
+              "guides/case-management"
+            ]
+          },
+          {
+            "group": "Detection",
+            "pages": [
+              "detection/sigma-rules",
+              "detection/yara-rules",
+              "detection/mitre-attck"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/architecture",
+              "advanced/performance",
+              "advanced/multi-agent-workflow"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/overview",
+              "api/upload",
+              "api/analysis",
+              "api/export"
+            ]
+          },
+          {
+            "group": "Engine Modules",
+            "pages": [
+              "api/forensic-engine",
+              "api/sigma-engine",
+              "api/ingestor"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Multi-format forensic evidence ingestion (EVTX, MFT, CSV, XLSX, JSON, Plist)",
+    "Real-time Sigma and YARA threat detection with 86+ rules",
+    "Interactive timeline visualization with risk scoring",
+    "MITRE ATT&CK framework mapping and TTP analysis",
+    "Advanced filtering and search capabilities",
+    "Multi-format export (PDF, HTML, CSV, XLSX, JSON)",
+    "Chain of custody with SHA256 hashing",
+    "Streaming upload for 6GB+ files"
+  ],
+  "publicApiSurface": [
+    "/upload - Upload forensic artifacts",
+    "/api/data/{filename} - Retrieve parsed data",
+    "/api/forensic_report - Generate forensic analysis",
+    "/api/export_filtered - Export filtered results",
+    "/api/export/html - Generate HTML report",
+    "/api/export/pdf - Generate PDF report",
+    "/api/histogram/{filename} - Get timeline histogram",
+    "/api/reset - Hard reset application state"
+  ]
+}
